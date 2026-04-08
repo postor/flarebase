@@ -70,7 +70,9 @@ impl WebhookDispatcher {
     }
 }
 
-#[async_trait::async_trait]
+use async_trait::async_trait;
+
+#[async_trait]
 pub trait WebhooksProvider: Send + Sync {
     async fn get_webhooks_for_event(&self, event_type: &EventType) -> anyhow::Result<Vec<Webhook>>;
 }

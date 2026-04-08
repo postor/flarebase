@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct Document {
     pub id: String,
     pub collection: String,
@@ -23,7 +23,7 @@ impl Document {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum QueryOp {
     Eq(Value),
     Gt(Value),
@@ -35,7 +35,7 @@ pub enum QueryOp {
     Or(Vec<QueryOp>),
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct Query {
     pub collection: String,
     pub filters: Vec<(String, QueryOp)>,
@@ -50,7 +50,7 @@ pub enum Precondition {
     LastUpdate(i64),
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum BatchOperation {
     Set(Document),
     Update {
@@ -66,7 +66,7 @@ pub enum BatchOperation {
     },
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct TransactionRequest {
     pub operations: Vec<BatchOperation>,
 }
@@ -75,7 +75,7 @@ pub mod cluster {
     tonic::include_proto!("flare.cluster");
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub enum EventType {
     UserCreated,
     UserUpdated,
@@ -87,14 +87,14 @@ pub enum EventType {
     VerificationCodeRequested,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct Event {
     pub event_type: EventType,
     pub payload: Value,
     pub timestamp: i64,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct Webhook {
     pub id: String,
     pub url: String,

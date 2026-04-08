@@ -58,7 +58,8 @@ async fn main() -> anyhow::Result<()> {
     let (io_layer, io) = SocketIo::builder().build_layer();
     io.ns("/", on_connect);
 
-    let storage = Arc::new(SledStorage::new(format!("./flare_{}.db", node_id))?);
+    let db_path = std::env::var("FLARE_DB_PATH").unwrap_or(format!("./flare_{}.db", node_id));
+    let storage = Arc::new(SledStorage::new(db_path)?);
     let cluster = Arc::new(ClusterManager::new());
     let (event_bus, event_rx) = EventBus::new();
     let event_bus = Arc::new(event_bus);
@@ -78,8 +79,8 @@ async fn main() -> anyhow::Result<()> {
         dispatcher.run(event_rx, webhooks_provider).await;
     });
 
-    // Mock Verification Hook (Infrastructure side-car)
-    // Listens for generic 'verification_requests' and generates an OTP
+    /* 
+    // Mock Verification Hook (Internal side-car) - Disabled in favor of external custom hook
     let mock_bus = event_bus.clone();
     let mock_storage = storage.clone();
     tokio::spawn(async move {
@@ -106,6 +107,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     });
+    */
 
     // Background task for node health monitoring & re-balancing
     let monitor_state = state.clone();
@@ -230,7 +232,7 @@ async fn delete_doc(
     Path((collection, id)): Path<(String, String)>,
 ) -> Json<bool> {
     state.storage.delete(&collection, &id).await.unwrap();
-    state.io.to(collection).emit("doc_deleted", &id).ok();
+    state.io.to(collection.clone()).emit("doc_deleted", &id).ok();
 
     // Emit internal event for webhooks
     state.event_bus.emit(Event {

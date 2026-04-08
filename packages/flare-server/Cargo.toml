@@ -16,4 +16,7 @@ flare-db = { path = "../flare-db" }
 flare-protocol = { path = "../flare-protocol" }
 socketioxide = { workspace = true }
 reqwest = { version = "0.11", features = ["json"] }
+tonic = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
 rand = "0.10.0"

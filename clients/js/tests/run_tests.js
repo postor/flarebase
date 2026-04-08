@@ -1,92 +1,156 @@
-import { FlareClient } from '../src/index.js';
-import http from 'http';
-import { spawn } from 'child_process';
+import { spawn, exec } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import net from 'net';
+import { promisify } from 'util';
 
-const baseURL = 'http://localhost:3000';
-const flare = new FlareClient(baseURL);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DB_DIR = path.join(__dirname, 'data');
+const execAsync = promisify(exec);
 
-async function runTests() {
-  console.log('🚀 Starting tests...');
-  let exitCode = 0;
-
-  try {
-    // 1. User Lifecycle Tests
-    console.log('\n--- Testing User Lifecycle ---');
-    const username = 'testuser@example.com';
-    
-    console.log('Requesting verification code...');
-    await flare.auth.requestVerificationCode(username);
-    
-    // In our mock server, the code is always '123456'
-    const code = '123456';
-    
-    console.log('Registering user...');
-    const user = await flare.auth.register({
-      username,
-      password: 'password123',
-      name: 'Test User'
-    }, code);
-    console.log('✓ User registered:', user.id);
-
-    console.log('Changing password...');
-    // Mock server doesn't need a new code if we haven't deleted it yet, but SDK deletes it.
-    // Let's re-request for password change
-    await flare.auth.requestVerificationCode(username);
-    const updatedUser = await flare.auth.updatePassword(user.id, 'newpassword456', code);
-    if (updatedUser.data.password !== 'newpassword456') throw new Error('Password update failed');
-    console.log('✓ Password changed');
-
-    console.log('Deleting account...');
-    await flare.auth.requestVerificationCode(username);
-    const deleteResult = await flare.auth.deleteAccount(user.id, code);
-    if (!deleteResult) throw new Error('Delete failed');
-    console.log('✓ Account deleted');
-
-    // 2. Article Flow Tests
-    console.log('\n--- Testing Article Flows ---');
-    const authorId = 'test-author';
-
-    console.log('Creating article...');
-    const article = await flare.collection('articles').add({
-      title: 'Hello World',
-      content: 'First article!',
-      author_id: authorId,
-      published: false
-    });
-    console.log('✓ Article created:', article.id);
-
-    console.log('Modifying and publishing...');
-    const updatedArticle = await flare.collection('articles').doc(article.id).update({
-      ...article.data,
-      title: 'Hello World Updated',
-      published: true
-    });
-    if (updatedArticle.data.title !== 'Hello World Updated') throw new Error('Modification failed');
-    if (!updatedArticle.data.published) throw new Error('Publication failed');
-    console.log('✓ Article modified and published');
-
-    console.log('Browsing lobby...');
-    const feed = await flare.collection('articles').where('published', '==', true).get();
-    if (feed.length === 0) throw new Error('Lobby empty');
-    console.log('✓ Lobby browsing successful');
-
-    console.log('Browsing my articles...');
-    const myArticles = await flare.collection('articles').where('author_id', '==', authorId).get();
-    if (myArticles.length === 0) throw new Error('My articles empty');
-    console.log('✓ My articles browsing successful');
-
-    console.log('\n✨ ALL TESTS PASSED! ✨');
-
-  } catch (err) {
-    console.error('\n❌ TEST FAILED:', err.message);
-    exitCode = 1;
-  }
-
-  process.exit(exitCode);
+async function cleanup() {
+    console.log('🧹 Cleaning up old data...');
+    if (fs.existsSync(DB_DIR)) {
+        fs.rmSync(DB_DIR, { recursive: true, force: true });
+    }
+    fs.mkdirSync(DB_DIR, { recursive: true });
 }
 
-// Start mock server and run tests
-const mockServer = spawn('node', ['tests/mock-server.js'], { stdio: 'inherit' });
+async function findFreePort() {
+    return new Promise((resolve, reject) => {
+        const server = net.createServer();
+        server.listen(0, () => {
+            const port = server.address().port;
+            server.close(() => resolve(port));
+        });
+        server.on('error', reject);
+    });
+}
 
-// Wait a bit for server to start
-setTimeout(runTests, 1000);
+async function waitForPort(port, timeout = 30000) {
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+        try {
+            await new Promise((resolve, reject) => {
+                const socket = new net.Socket();
+                socket.setTimeout(1000);
+                socket.once('connect', () => {
+                    socket.end();
+                    resolve();
+                });
+                socket.once('error', reject);
+                socket.once('timeout', reject);
+                socket.connect(port, 'localhost');
+            });
+            return; // Success
+        } catch (err) {
+            await new Promise(r => setTimeout(r, 500));
+        }
+    }
+    throw new Error(`Timeout waiting for port ${port}`);
+}
+
+async function killProcessTree(proc) {
+    if (!proc || !proc.pid) return;
+    if (process.platform === 'win32') {
+        try {
+            await execAsync(`taskkill /pid ${proc.pid} /T /F`);
+        } catch (err) {
+            // Might already be dead
+        }
+    } else {
+        proc.kill();
+    }
+}
+
+async function runCommand(command, args, options = {}) {
+    return new Promise((resolve, reject) => {
+        console.log(`🏃 Running: ${command} ${args.join(' ')}`);
+        const proc = spawn(command, args, { 
+            stdio: 'inherit',
+            shell: true,
+            ...options 
+        });
+        
+        proc.on('close', (code) => {
+            if (code === 0) resolve();
+            else reject(new Error(`${command} exited with code ${code}`));
+        });
+        
+        proc.on('error', reject);
+    });
+}
+
+async function main() {
+    await cleanup();
+
+    const FLARE_PORT = await findFreePort();
+    const HOOK_PORT = await findFreePort();
+    const FLARE_URL = `http://localhost:${FLARE_PORT}`;
+    const HOOK_URL = `http://localhost:${HOOK_PORT}`;
+    const DB_PATH = path.join(DB_DIR, `flare_${FLARE_PORT}.db`);
+
+    console.log(`📌 Using dynamic ports: Flarebase=${FLARE_PORT}, Hook=${HOOK_PORT}`);
+
+    console.log('🚀 Starting Flarebase Rust Server...');
+    const rustServer = spawn('cargo', ['run'], {
+        cwd: path.join(__dirname, '../../packages/flare-server'),
+        env: {
+            ...process.env,
+            FLARE_DB_PATH: DB_PATH,
+            HTTP_ADDR: `0.0.0.0:${FLARE_PORT}`,
+            NODE_ID: "1"
+        },
+        stdio: 'inherit',
+        shell: true
+    });
+
+    console.log('🚀 Starting Custom Hook Mock...');
+    const customHook = spawn('node', ['tests/custom-hook.js'], {
+        cwd: path.join(__dirname, '..'),
+        env: {
+            ...process.env,
+            PORT: HOOK_PORT,
+            FLARE_URL: FLARE_URL
+        },
+        stdio: 'inherit',
+        shell: true
+    });
+
+    try {
+        console.log('⏳ Waiting for servers to be ready...');
+        await Promise.all([
+            waitForPort(FLARE_PORT),
+            waitForPort(HOOK_PORT)
+        ]);
+        console.log('✅ Servers are ready!');
+
+        console.log('🧪 Running tests...');
+        await runCommand('npx', ['vitest', 'run'], { 
+            cwd: path.join(__dirname, '..'),
+            env: {
+                ...process.env,
+                FLARE_URL: FLARE_URL,
+                HOOK_URL: HOOK_URL
+            }
+        });
+        console.log('✅ All tests passed!');
+    } catch (err) {
+        console.error('❌ Error during test run:', err.message);
+        process.exitCode = 1;
+    } finally {
+        console.log('🛑 Shutting down servers...');
+        await Promise.all([
+            killProcessTree(rustServer),
+            killProcessTree(customHook)
+        ]);
+        console.log('👋 Done.');
+        process.exit();
+    }
+}
+
+main().catch(err => {
+    console.error('Fatal error:', err);
+    process.exit(1);
+});

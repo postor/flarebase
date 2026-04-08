@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { FlareClient } from '../src/index.js';
 
-const baseURL = 'http://localhost:3000';
+const baseURL = process.env.FLARE_URL || 'http://localhost:3000';
 const flare = new FlareClient(baseURL);
 
 describe('Article Flows', () => {
