@@ -1,0 +1,17 @@
+[package]
+name = "flare-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = "0.3"
+anyhow = { workspace = true }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+flare-db = { path = "../flare-db" }
+flare-protocol = { path = "../flare-protocol" }
+socketioxide = { workspace = true }

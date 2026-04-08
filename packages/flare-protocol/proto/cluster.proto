@@ -1,0 +1,35 @@
+syntax = "proto3";
+package flare.cluster;
+
+service ClusterService {
+  rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
+  rpc Join (JoinRequest) returns (JoinResponse);
+  rpc Replicate (ReplicateRequest) returns (ReplicateResponse);
+}
+
+message HeartbeatRequest {
+  uint64 node_id = 1;
+  string address = 2;
+}
+
+message HeartbeatResponse {
+  bool success = 1;
+  uint64 leader_id = 2;
+}
+
+message JoinRequest {
+  uint64 node_id = 1;
+  string address = 2;
+}
+
+message JoinResponse {
+  bool success = 1;
+}
+
+message ReplicateRequest {
+  bytes log_entry = 1;
+}
+
+message ReplicateResponse {
+  bool success = 1;
+}
