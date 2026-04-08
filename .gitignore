@@ -1,0 +1,28 @@
+# Rust build artifacts
+target/
+**/*.rs.bk
+
+# Database files
+*.db
+*.db-journal
+flare_*.db/
+
+# Node.js / Client artifacts
+node_modules/
+dist/
+.npm
+build/
+
+# Environment and sensitive files
+.env
+.env.local
+.env.*.local
+
+# IDE and OS specific
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml
