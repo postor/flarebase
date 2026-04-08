@@ -47,12 +47,16 @@ pub mod cluster {
     tonic::include_proto!("flare.cluster");
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum EventType {
     UserCreated,
+    UserUpdated,
+    UserDeleted,
     DocCreated,
+    DocUpdated,
     DocDeleted,
     ConfigUpdated,
+    VerificationCodeRequested,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

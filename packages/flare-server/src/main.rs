@@ -73,9 +73,38 @@ async fn main() -> anyhow::Result<()> {
 
     // Start Webhook Dispatcher
     let dispatcher = WebhookDispatcher::new();
-    let webhooks_provider = storage.clone(); // Implementing trait for SledStorage
+    let webhooks_provider = storage.clone();
     tokio::spawn(async move {
         dispatcher.run(event_rx, webhooks_provider).await;
+    });
+
+    // Mock Verification Hook (Infrastructure side-car)
+    // Listens for generic 'verification_requests' and generates an OTP
+    let mock_bus = event_bus.clone();
+    let mock_storage = storage.clone();
+    tokio::spawn(async move {
+        let mut rx = mock_bus.sender.subscribe();
+        while let Ok(event) = rx.recv().await {
+            if event.event_type == EventType::DocCreated {
+                if let Some(collection) = event.payload.get("collection").and_then(|v| v.as_str()) {
+                    if collection == "verification_requests" {
+                        if let Some(target) = event.payload.get("data").and_then(|v| v.get("target")).and_then(|v| v.as_str()) {
+                            use rand::Rng;
+                            let code = rand::rng().random_range(100000..999999).to_string();
+                            tracing::info!("MOCK HOOK: Generating code {} for {}", code, target);
+                            
+                            let mut doc = Document::new("__internal_verification__".to_string(), json!({
+                                "target": target,
+                                "code": code,
+                                "expires_at": chrono::Utc::now().timestamp_millis() + 300000
+                            }));
+                            doc.id = target.to_string();
+                            let _ = mock_storage.insert(doc).await;
+                        }
+                    }
+                }
+            }
+        }
     });
 
     // Background task for node health monitoring & re-balancing
@@ -100,8 +129,8 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let app = Router::new()
-        .route("/dbs/:collection/docs", post(create_doc).get(list_docs))
-        .route("/dbs/:collection/docs/:id", get(get_doc).delete(delete_doc))
+        .route("/collections/:collection", post(create_doc).get(list_docs))
+        .route("/collections/:collection/:id", get(get_doc).put(update_doc).delete(delete_doc))
         .route("/query", post(run_query))
         .layer(CorsLayer::permissive())
         .layer(io_layer)
@@ -146,11 +175,32 @@ async fn create_doc(
 ) -> Json<Document> {
     let doc = Document::new(collection.clone(), data);
     state.storage.insert(doc.clone()).await.unwrap();
-    state.io.to(collection).emit("doc_created", &doc).ok();
+    state.io.to(collection.clone()).emit("doc_created", &doc).ok();
 
-    // Emit internal event for webhooks
     state.event_bus.emit(Event {
         event_type: EventType::DocCreated,
+        payload: serde_json::to_value(&doc).unwrap(),
+        timestamp: doc.updated_at,
+    });
+
+    Json(doc)
+}
+
+async fn update_doc(
+    State(state): State<Arc<AppState>>,
+    Path((collection, id)): Path<(String, String)>,
+    Json(data): Json<serde_json::Value>,
+) -> Json<Document> {
+    let mut doc = state.storage.get(&collection, &id).await.unwrap().expect("Document not found");
+    doc.data = data;
+    doc.version += 1;
+    doc.updated_at = chrono::Utc::now().timestamp_millis();
+    
+    state.storage.insert(doc.clone()).await.unwrap();
+    state.io.to(collection.clone()).emit("doc_updated", &doc).ok();
+
+    state.event_bus.emit(Event {
+        event_type: EventType::DocUpdated,
         payload: serde_json::to_value(&doc).unwrap(),
         timestamp: doc.updated_at,
     });

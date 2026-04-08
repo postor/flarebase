@@ -6,7 +6,8 @@
       "Bash(sh -s -- -y)",
       "Bash(export PATH=\"$PATH:$HOME/.cargo/bin\")",
       "Bash(rustc --version)",
-      "Bash(cargo --version)"
+      "Bash(cargo --version)",
+      "Skill(rust)"
     ]
   }
 }
