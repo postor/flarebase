@@ -15,3 +15,4 @@ serde_json = { workspace = true }
 flare-db = { path = "../flare-db" }
 flare-protocol = { path = "../flare-protocol" }
 socketioxide = { workspace = true }
+reqwest = { version = "0.11", features = ["json"] }

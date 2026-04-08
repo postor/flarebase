@@ -46,3 +46,26 @@ pub struct Query {
 pub mod cluster {
     tonic::include_proto!("flare.cluster");
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum EventType {
+    UserCreated,
+    DocCreated,
+    DocDeleted,
+    ConfigUpdated,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Event {
+    pub event_type: EventType,
+    pub payload: Value,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Webhook {
+    pub id: String,
+    pub url: String,
+    pub events: Vec<EventType>,
+    pub secret: Option<String>,
+}

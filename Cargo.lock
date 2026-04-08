@@ -686,6 +686,7 @@ dependencies = [
  "serde_json",
  "sled",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -709,6 +710,7 @@ dependencies = [
  "axum 0.7.9",
  "flare-db",
  "flare-protocol",
+ "reqwest",
  "serde",
  "serde_json",
  "socketioxide",

@@ -4,25 +4,47 @@ use axum::{
     Json, Router,
 };
 use flare_db::{SledStorage, Storage};
-use flare_protocol::{Document, Query};
+use flare_protocol::{Document, Event, EventType, Webhook, Query, QueryOp};
 use flare_protocol::cluster::cluster_service_server::ClusterServiceServer;
 use socketioxide::{
     extract::{Data, SocketRef},
     SocketIo,
 };
+use serde_json::json;
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use tonic::transport::Server;
 use tokio::time::{self, Duration};
+use async_trait::async_trait;
 
 mod cluster;
+mod hooks;
+
 use cluster::ClusterManager;
+use hooks::{EventBus, WebhookDispatcher, WebhooksProvider};
+
+#[async_trait]
+impl WebhooksProvider for SledStorage {
+    async fn get_webhooks_for_event(&self, event_type: &EventType) -> anyhow::Result<Vec<Webhook>> {
+        // Fetch all webhooks from the special __webhooks__ collection
+        let docs = self.list("__webhooks__").await?;
+        let mut result = Vec::new();
+        for doc in docs {
+            let webhook: Webhook = serde_json::from_value(doc.data)?;
+            if webhook.events.contains(event_type) {
+                result.push(webhook);
+            }
+        }
+        Ok(result)
+    }
+}
 
 struct AppState {
     storage: Arc<dyn Storage>,
     io: SocketIo,
     cluster: Arc<ClusterManager>,
     node_id: u64,
+    event_bus: Arc<EventBus>,
 }
 
 #[tokio::main]
@@ -38,12 +60,22 @@ async fn main() -> anyhow::Result<()> {
 
     let storage = Arc::new(SledStorage::new(format!("./flare_{}.db", node_id))?);
     let cluster = Arc::new(ClusterManager::new());
+    let (event_bus, event_rx) = EventBus::new();
+    let event_bus = Arc::new(event_bus);
     
     let state = Arc::new(AppState {
-        storage,
+        storage: storage.clone(),
         io: io.clone(),
         cluster: cluster.clone(),
         node_id,
+        event_bus: event_bus.clone(),
+    });
+
+    // Start Webhook Dispatcher
+    let dispatcher = WebhookDispatcher::new();
+    let webhooks_provider = storage.clone(); // Implementing trait for SledStorage
+    tokio::spawn(async move {
+        dispatcher.run(event_rx, webhooks_provider).await;
     });
 
     // Background task for node health monitoring & re-balancing
@@ -115,6 +147,14 @@ async fn create_doc(
     let doc = Document::new(collection.clone(), data);
     state.storage.insert(doc.clone()).await.unwrap();
     state.io.to(collection).emit("doc_created", &doc).ok();
+
+    // Emit internal event for webhooks
+    state.event_bus.emit(Event {
+        event_type: EventType::DocCreated,
+        payload: serde_json::to_value(&doc).unwrap(),
+        timestamp: doc.updated_at,
+    });
+
     Json(doc)
 }
 
@@ -140,6 +180,14 @@ async fn delete_doc(
 ) -> Json<bool> {
     state.storage.delete(&collection, &id).await.unwrap();
     state.io.to(collection).emit("doc_deleted", &id).ok();
+
+    // Emit internal event for webhooks
+    state.event_bus.emit(Event {
+        event_type: EventType::DocDeleted,
+        payload: serde_json::json!({ "id": id, "collection": collection }),
+        timestamp: chrono::Utc::now().timestamp_millis(),
+    });
+
     Json(true)
 }
 
