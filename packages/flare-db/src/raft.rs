@@ -11,6 +11,7 @@ pub type NodeId = u64;
 pub enum Request {
     Write(flare_protocol::Document),
     Delete { collection: String, id: String },
+    Batch(Vec<flare_protocol::BatchOperation>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

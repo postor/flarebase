@@ -4,7 +4,7 @@ use axum::{
     Json, Router,
 };
 use flare_db::{SledStorage, Storage};
-use flare_protocol::{Document, Event, EventType, Webhook, Query, QueryOp};
+use flare_protocol::{Document, Event, EventType, Webhook, Query, QueryOp, TransactionRequest, BatchOperation};
 use flare_protocol::cluster::cluster_service_server::ClusterServiceServer;
 use socketioxide::{
     extract::{Data, SocketRef},
@@ -132,6 +132,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/collections/:collection", post(create_doc).get(list_docs))
         .route("/collections/:collection/:id", get(get_doc).put(update_doc).delete(delete_doc))
         .route("/query", post(run_query))
+        .route("/transaction", post(commit_transaction))
         .layer(CorsLayer::permissive())
         .layer(io_layer)
         .with_state(state);
@@ -247,4 +248,48 @@ async fn run_query(
 ) -> Json<Vec<Document>> {
     let docs = state.storage.query(query).await.unwrap();
     Json(docs)
+}
+
+async fn commit_transaction(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<TransactionRequest>,
+) -> Json<bool> {
+    // Replicate via Raft if this were a full implementation
+    // For now, apply directly to storage
+    state.storage.apply_batch(req.operations.clone()).await.unwrap();
+
+    // Emit events for each operation
+    for op in req.operations {
+        match op {
+            BatchOperation::Set(doc) => {
+                state.io.to(doc.collection.clone()).emit("doc_created", &doc).ok();
+                state.event_bus.emit(Event {
+                    event_type: EventType::DocCreated,
+                    payload: serde_json::to_value(&doc).unwrap(),
+                    timestamp: doc.updated_at,
+                });
+            }
+            BatchOperation::Update { collection, id, .. } => {
+                // Fetch the updated doc to emit it
+                if let Ok(Some(doc)) = state.storage.get(&collection, &id).await {
+                    state.io.to(collection).emit("doc_updated", &doc).ok();
+                    state.event_bus.emit(Event {
+                        event_type: EventType::DocUpdated,
+                        payload: serde_json::to_value(&doc).unwrap(),
+                        timestamp: doc.updated_at,
+                    });
+                }
+            }
+            BatchOperation::Delete { collection, id, .. } => {
+                state.io.to(collection.clone()).emit("doc_deleted", &id).ok();
+                state.event_bus.emit(Event {
+                    event_type: EventType::DocDeleted,
+                    payload: serde_json::json!({ "id": id, "collection": collection }),
+                    timestamp: chrono::Utc::now().timestamp_millis(),
+                });
+            }
+        }
+    }
+
+    Json(true)
 }

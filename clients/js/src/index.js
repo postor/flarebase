@@ -19,6 +19,26 @@ export class FlareClient {
         return response.json();
     }
 
+    batch() {
+        return new WriteBatch(this);
+    }
+
+    async runTransaction(updateFunction) {
+        const transaction = new Transaction(this);
+        try {
+            await updateFunction(transaction);
+            const response = await fetch(`${this.baseURL}/transaction`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ operations: transaction.operations })
+            });
+            return response.json();
+        } catch (error) {
+            console.error('Transaction failed:', error);
+            throw error;
+        }
+    }
+
     get auth() {
         return {
             requestVerificationCode: async (target) => {
@@ -145,5 +165,104 @@ class DocumentReference {
             method: 'DELETE'
         });
         return response.json();
+    }
+}
+
+class WriteBatch {
+    constructor(client) {
+        this.client = client;
+        this.operations = [];
+    }
+
+    set(docRef, data) {
+        this.operations.push({
+            Set: {
+                id: docRef.id,
+                collection: docRef.collection,
+                data: data,
+                version: 1,
+                updated_at: Date.now()
+            }
+        });
+        return this;
+    }
+
+    update(docRef, data) {
+        this.operations.push({
+            Update: {
+                collection: docRef.collection,
+                id: docRef.id,
+                data: data,
+                precondition: null
+            }
+        });
+        return this;
+    }
+
+    delete(docRef) {
+        this.operations.push({
+            Delete: {
+                collection: docRef.collection,
+                id: docRef.id,
+                precondition: null
+            }
+        });
+        return this;
+    }
+
+    async commit() {
+        const response = await fetch(`${this.client.baseURL}/transaction`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ operations: this.operations })
+        });
+        return response.json();
+    }
+}
+
+class Transaction {
+    constructor(client) {
+        this.client = client;
+        this.operations = [];
+    }
+
+    async get(docRef) {
+        return docRef.get();
+    }
+
+    set(docRef, data) {
+        this.operations.push({
+            Set: {
+                id: docRef.id,
+                collection: docRef.collection,
+                data: data,
+                version: 1,
+                updated_at: Date.now()
+            }
+        });
+        return this;
+    }
+
+    update(docRef, data, precondition = null) {
+        this.operations.push({
+            Update: {
+                collection: docRef.collection,
+                id: docRef.id,
+                data: data,
+                precondition: precondition
+            }
+        });
+        return this;
+    }
+
+    delete(docRef, precondition = null) {
+        this.operations.push({
+            Delete: {
+                collection: docRef.collection,
+                id: docRef.id,
+                precondition: precondition
+            }
+        });
+        return this;
     }
 }

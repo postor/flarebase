@@ -22,8 +22,9 @@ prost = "0.12"
 sled = "0.34"
 openraft = "0.9"
 socketioxide = "0.11"
-tower = "0.4"
+tower = "0.5"
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 tempfile = "3"
+indexmap = "2"

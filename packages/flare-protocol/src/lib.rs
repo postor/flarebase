@@ -43,6 +43,34 @@ pub struct Query {
     pub offset: Option<usize>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub enum Precondition {
+    Exists(bool),
+    Version(u64),
+    LastUpdate(i64),
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum BatchOperation {
+    Set(Document),
+    Update {
+        collection: String,
+        id: String,
+        data: Value,
+        precondition: Option<Precondition>,
+    },
+    Delete {
+        collection: String,
+        id: String,
+        precondition: Option<Precondition>,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TransactionRequest {
+    pub operations: Vec<BatchOperation>,
+}
+
 pub mod cluster {
     tonic::include_proto!("flare.cluster");
 }
