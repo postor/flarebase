@@ -3,19 +3,29 @@ use flare_protocol::{HookRegister, HookResponse};
 use serde_json::Value;
 use tokio::sync::oneshot;
 use uuid::Uuid;
+use std::sync::Arc;
 
 pub struct HookManager {
     // event_name -> Vec<SocketId>
-    hooks: DashMap<String, Vec<String>>,
+    pub(in crate) hooks: Arc<DashMap<String, Vec<String>>>,
     // requestId -> Sender for the client's await
-    pending_requests: DashMap<String, oneshot::Sender<Value>>,
+    pub(in crate) pending_requests: Arc<DashMap<String, oneshot::Sender<Value>>>,
+}
+
+impl Clone for HookManager {
+    fn clone(&self) -> Self {
+        Self {
+            hooks: Arc::clone(&self.hooks),
+            pending_requests: Arc::clone(&self.pending_requests),
+        }
+    }
 }
 
 impl HookManager {
     pub fn new() -> Self {
         Self {
-            hooks: DashMap::new(),
-            pending_requests: DashMap::new(),
+            hooks: Arc::new(DashMap::new()),
+            pending_requests: Arc::new(DashMap::new()),
         }
     }
 
@@ -81,6 +91,18 @@ impl HookManager {
         for mut entry in self.hooks.iter_mut() {
             entry.retain(|id| id != sid);
         }
+    }
+
+    // ===== 测试辅助方法 =====
+
+    /// 获取指定事件的 Hook 数量 (用于测试)
+    pub fn get_hook_count(&self, event_name: &str) -> usize {
+        self.hooks.get(event_name).map(|v| v.len()).unwrap_or(0)
+    }
+
+    /// 获取指定事件的 Hook Socket IDs (用于测试)
+    pub fn get_hooks_for_event(&self, event_name: &str) -> Vec<String> {
+        self.hooks.get(event_name).map(|v| v.clone()).unwrap_or_default()
     }
 }
 

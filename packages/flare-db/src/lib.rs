@@ -4,6 +4,10 @@ use flare_protocol::Document;
 use sled::Db;
 use chrono;
 
+// Re-export modules
+pub mod memory;
+pub mod persistence;
+
 
 
 #[async_trait]
@@ -27,6 +31,11 @@ impl SledStorage {
     pub fn new<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
         let db = sled::open(path)?;
         Ok(Self { db })
+    }
+
+    /// Get access to the underlying sled database for advanced operations like index management
+    pub fn db(&self) -> &Db {
+        &self.db
     }
 }
 

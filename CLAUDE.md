@@ -5,6 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 📖 Documentation Hub
 A comprehensive set of technical documents is available in the [**docs/**](./docs/README.md) directory:
 - [Architecture Overview](./docs/core/ARCHITECTURE.md)
+- [Index System](./docs/core/INDEXING_DESIGN.md)
+- [Cluster Computation](./docs/core/CLUSTER_COMPUTATION_DESIGN.md)
 - [Security & Permissions](./docs/core/SECURITY.md)
 - [Hook Protocol](./docs/features/HOOKS_PROTOCOL.md)
 - [Session Synchronization](./docs/features/SESSION_SYNC.md)

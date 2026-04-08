@@ -3,6 +3,14 @@ name = "flare-server"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "flare_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "flare-server"
+path = "src/main.rs"
+
 [dependencies]
 axum = { workspace = true }
 tokio = { workspace = true }

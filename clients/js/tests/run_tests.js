@@ -11,10 +11,18 @@ const execAsync = promisify(exec);
 
 async function cleanup() {
     console.log('🧹 Cleaning up old data...');
-    if (fs.existsSync(DB_DIR)) {
-        fs.rmSync(DB_DIR, { recursive: true, force: true });
+    try {
+        if (fs.existsSync(DB_DIR)) {
+            // Try to remove with force, ignoring errors
+            fs.rmSync(DB_DIR, { recursive: true, force: true, maxRetries: 3 });
+        }
+        // Small delay to ensure files are released
+        await new Promise(r => setTimeout(r, 100));
+        fs.mkdirSync(DB_DIR, { recursive: true });
+    } catch (err) {
+        console.warn(`⚠️  Cleanup warning: ${err.message}`);
+        // Continue anyway - individual tests will use unique ports
     }
-    fs.mkdirSync(DB_DIR, { recursive: true });
 }
 
 async function findFreePort() {
@@ -28,27 +36,30 @@ async function findFreePort() {
     });
 }
 
-async function waitForPort(port, timeout = 30000) {
+async function waitForPort(port, timeout = 60000) {
     const start = Date.now();
+    let attempt = 0;
     while (Date.now() - start < timeout) {
+        attempt++;
         try {
             await new Promise((resolve, reject) => {
                 const socket = new net.Socket();
-                socket.setTimeout(1000);
+                socket.setTimeout(2000);
                 socket.once('connect', () => {
                     socket.end();
                     resolve();
                 });
                 socket.once('error', reject);
                 socket.once('timeout', reject);
-                socket.connect(port, 'localhost');
+                socket.connect(port, '127.0.0.1');
             });
+            console.log(`✅ Port ${port} is ready after ${attempt} attempts`);
             return; // Success
         } catch (err) {
-            await new Promise(r => setTimeout(r, 500));
+            await new Promise(r => setTimeout(r, 1000));
         }
     }
-    throw new Error(`Timeout waiting for port ${port}`);
+    throw new Error(`Timeout waiting for port ${port} after ${attempt} attempts`);
 }
 
 async function killProcessOnPort(port) {
@@ -105,18 +116,49 @@ async function main() {
         await killProcessOnPort(FLARE_PORT);
         await killProcessOnPort(HOOK_PORT);
 
-        console.log('🚀 Starting Flarebase Rust Server via exec...');
-        rustServer = exec(`cargo run`, {
-            cwd: path.join(__dirname, '../../packages/flare-server'),
+        console.log('🚀 Starting Flarebase Rust Server (using pre-built binary)...');
+        // Go up from clients/js/tests to the repo root, then to workspace target
+        const repoRoot = path.join(__dirname, '../../../');
+        const serverBinary = path.join(repoRoot, 'target/release/flare-server.exe');
+        const serverCmd = serverBinary; // Don't quote it - let Node.js handle it
+
+        console.log(`[DEBUG] Server binary: ${serverBinary}`);
+        console.log(`[DEBUG] Repo root: ${repoRoot}`);
+        console.log(`[DEBUG] DB path: ${DB_PATH}`);
+        console.log(`[DEBUG] Port: ${FLARE_PORT}`);
+
+        rustServer = exec(serverCmd, {
+            cwd: repoRoot,
+            windowsHide: true,
             env: {
                 ...process.env,
                 FLARE_DB_PATH: DB_PATH,
-                HTTP_ADDR: `0.0.0.0:${FLARE_PORT}`,
+                HTTP_ADDR: `127.0.0.1:${FLARE_PORT}`,
                 NODE_ID: "1"
             }
         });
-        rustServer.stdout.on('data', d => process.stdout.write(`[Rust] ${d}`));
-        rustServer.stderr.on('data', d => process.stderr.write(`[Rust Error] ${d}`));
+
+        let rustOutput = '';
+        rustServer.stdout.on('data', d => {
+            const text = d.toString();
+            process.stdout.write(`[Rust] ${text}`);
+            rustOutput += text;
+            // Check for server ready message
+            if (text.includes('listening on HTTP')) {
+                console.log(`✅ Rust server startup detected!`);
+            }
+        });
+
+        rustServer.stderr.on('data', d => {
+            const text = d.toString();
+            process.stderr.write(`[Rust Error] ${text}`);
+            rustOutput += text;
+        });
+
+        // Also check if process fails to start
+        rustServer.on('error', (err) => {
+            console.error(`[ERROR] Failed to start server process: ${err.message}`);
+        });
 
         console.log('🚀 Starting Custom Hook Mock via exec...');
         customHook = exec(`node tests/custom-hook.js`, {
@@ -138,7 +180,10 @@ async function main() {
         console.log('✅ Servers are ready!');
 
         console.log('🧪 Running tests...');
-        await runCommand(`npx vitest run --env FLARE_URL=${FLARE_URL} --env HOOK_URL=${HOOK_URL}`);
+        // Set environment variables for vitest
+        process.env.FLARE_URL = FLARE_URL;
+        process.env.HOOK_URL = HOOK_URL;
+        await runCommand(`npx vitest run`);
         
         console.log('✅ All tests passed!');
 

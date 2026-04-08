@@ -4,6 +4,9 @@ Welcome to the technical documentation library for Flarebase, a distributed, hig
 
 ## 🏛️ Core Architecture
 - **[Architecture Overview](./core/ARCHITECTURE.md)**: Conceptual design, data flow, and philosophical principles.
+- **[Memory Storage Design](./core/MEMORY_STORAGE_DESIGN.md)**: High-performance in-memory storage implementation with benchmarks.
+- **[Index System](./core/INDEXING_DESIGN.md)**: Secondary index trees, query optimization, and maintenance logic.
+- **[Cluster Computation](./core/CLUSTER_COMPUTATION_DESIGN.md)**: Sharding, distributed query execution, and load-balanced hook processing.
 - **[Security & Permissions](./core/SECURITY.md)**: Resource-based authorization, data sanitization, and sync policies.
 
 ## 🚀 Features & Protocols

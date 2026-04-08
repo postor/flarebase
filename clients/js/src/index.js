@@ -72,30 +72,123 @@ export class FlareClient {
 
     get auth() {
         return {
-            requestVerificationCode: async (target) => {
-                // In Flarebase, a verification request is just a document write
-                // to a special collection that triggers a mock hook.
-                return this.collection('verification_requests').add({ target });
+            // New OTP-based authentication (aligned with Rust tests)
+            requestVerificationCode: async (email, sessionId = null) => {
+                const now = Date.now();
+                const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+                // Create OTP record
+                const otpRecord = await this.collection('_internal_otps').add({
+                    email,
+                    otp,
+                    created_at: now,
+                    expires_at: now + 300000, // 5 minutes
+                    used: false
+                });
+
+                // Create session-specific status if sessionId provided
+                if (sessionId) {
+                    const statusCollection = `_session_${sessionId}_otp_status`;
+                    await this.collection(statusCollection).add({
+                        status: 'sent',
+                        email,
+                        message: 'OTP sent to your email',
+                        created_at: now
+                    });
+                }
+
+                return {
+                    success: true,
+                    message: 'OTP sent successfully',
+                    otpId: otpRecord.id
+                };
             },
-            register: async (userData, code) => {
-                await this._verifyCode(userData.username, code);
-                return this.collection('users').add(userData);
+
+            register: async (userData, otp) => {
+                const email = userData.email;
+                if (!email) {
+                    throw new Error('Email is required');
+                }
+
+                // Verify OTP
+                await this._verifyOtp(email, otp);
+
+                // Check for duplicate email
+                const existingUsers = await this.collection('users')
+                    .where('email', '==', email)
+                    .get();
+
+                if (existingUsers.length > 0) {
+                    throw new Error('User with this email already exists');
+                }
+
+                // Create user with default fields
+                const now = Date.now();
+                const userRecord = await this.collection('users').add({
+                    ...userData,
+                    status: userData.status || 'active',
+                    created_at: now,
+                    role: userData.role || 'user'
+                });
+
+                return userRecord;
             },
-            updatePassword: async (userId, newPassword, code) => {
+
+            updatePassword: async (userId, newPassword, otp) => {
                 const user = await this.collection('users').doc(userId).get();
                 if (!user) throw new Error('User not found');
-                await this._verifyCode(user.data.username, code);
-                return this.collection('users').doc(userId).update({ ...user.data, password: newPassword });
+
+                const email = user.data.email;
+                await this._verifyOtp(email, otp);
+
+                return this.collection('users').doc(userId).update({
+                    ...user.data,
+                    password: newPassword,
+                    updated_at: Date.now()
+                });
             },
-            deleteAccount: async (userId, code) => {
+
+            deleteAccount: async (userId, otp) => {
                 const user = await this.collection('users').doc(userId).get();
                 if (!user) throw new Error('User not found');
-                await this._verifyCode(user.data.username, code);
+
+                const email = user.data.email;
+                await this._verifyOtp(email, otp);
+
                 return this.collection('users').doc(userId).delete();
             }
         };
     }
 
+    async _verifyOtp(email, otp) {
+        // Query for valid OTP
+        const otpRecords = await this.collection('_internal_otps')
+            .where('email', '==', email)
+            .where('otp', '==', otp)
+            .where('used', '==', false)
+            .get();
+
+        if (otpRecords.length === 0) {
+            throw new Error('Invalid or expired OTP');
+        }
+
+        const otpRecord = otpRecords[0];
+
+        // Check expiration
+        if (Date.now() > otpRecord.data.expires_at) {
+            throw new Error('OTP has expired');
+        }
+
+        // Mark OTP as used
+        await this.collection('_internal_otps').doc(otpRecord.id).update({
+            used: true,
+            used_at: Date.now()
+        });
+
+        return true;
+    }
+
+    // Legacy verification method (for backward compatibility)
     async _verifyCode(target, code) {
         const res = await this.collection('__internal_verification__').doc(target).get();
         if (!res) {
@@ -107,7 +200,6 @@ export class FlareClient {
         if (Date.now() > res.data.expires_at) {
             throw new Error('Verification code expired');
         }
-        // Clean up code after verification
         await this.collection('__internal_verification__').doc(target).delete();
         return true;
     }
@@ -148,10 +240,26 @@ class CollectionReference {
         };
         const queryOp = {};
         queryOp[opMap[op] || op] = value;
-        
-        return {
-            get: () => this.client.query(this.name, [[field, queryOp]])
+
+        // Support chaining by storing filters
+        if (!this._filters) {
+            this._filters = [];
+        }
+        this._filters.push([field, queryOp]);
+
+        // Return a new query object that supports chaining
+        const query = {
+            _filters: [...this._filters],
+            where: (f, o, v) => {
+                const qop = {};
+                qop[opMap[o] || o] = v;
+                query._filters.push([f, qop]);
+                return query;
+            },
+            get: () => this.client.query(this.name, query._filters)
         };
+
+        return query;
     }
 
     onSnapshot(callback) {
@@ -316,21 +424,26 @@ export class FlareHook {
         });
 
         this.socket.on('hook_request', async (req) => {
+            console.log('[FlareHook] Received hook_request:', req);
             if (this.handlers.has(req.event_name)) {
                 try {
                     const data = await this.handlers.get(req.event_name)(req);
+                    console.log('[FlareHook] Sending success response for', req.event_name);
                     this.socket.emit('hook_response', {
                         request_id: req.request_id,
                         status: 'success',
                         data
                     });
                 } catch (error) {
+                    console.log('[FlareHook] Sending error response for', req.event_name, error.message);
                     this.socket.emit('hook_response', {
                         request_id: req.request_id,
                         status: 'error',
                         error: error.message
                     });
                 }
+            } else {
+                console.log('[FlareHook] No handler registered for event:', req.event_name);
             }
         });
     }

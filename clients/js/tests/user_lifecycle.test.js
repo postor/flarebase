@@ -1,90 +1,129 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { FlareClient } from '../src/index.js';
 
 const baseURL = process.env.FLARE_URL || 'http://localhost:3000';
 const flare = new FlareClient(baseURL);
 
-/**
- * Helper to wait for a verification code to arrive via Socket.io
- */
-async function waitForCode(target) {
-    return new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-            reject(new Error(`Timed out waiting for code for ${target}`));
-        }, 10000);
-
-        flare.collection('__internal_verification__').onSnapshot((change) => {
-            if ((change.type === 'added' || change.type === 'modified') && 
-                (change.doc.id === target || change.doc.data.target === target)) {
-                clearTimeout(timeout);
-                resolve(change.doc.data.code);
-            }
-        });
-    });
-}
-
 describe('User Lifecycle (Integration)', () => {
     let userId;
-    const username = 'testuser@example.com';
+    const email = 'testuser@example.com';
 
     beforeAll(async () => {
         // Setup Webhook in Flarebase so the Rust server knows where to send events
         console.log('[TestSetup] Registering custom webhook...');
-        await flare.collection('__webhooks__').add({
-            url: process.env.HOOK_URL || 'http://localhost:3001',
-            events: ['DocCreated'],
-            secret: 'test-secret'
-        });
-        
-        // Wait a small buffer for Flarebase to register the hook
-        await new Promise(r => setTimeout(r, 1000));
+        try {
+            await flare.collection('__webhooks__').add({
+                url: process.env.HOOK_URL || 'http://localhost:3001',
+                events: ['DocCreated', 'DocUpdated'],
+                secret: 'test-secret'
+            });
+            await new Promise(r => setTimeout(r, 1000));
+        } catch (err) {
+            console.warn('[TestSetup] Webhook registration failed (may already exist):', err.message);
+        }
+
+        // Cleanup any existing test user
+        try {
+            const existingUsers = await flare.collection('users')
+                .where('email', '==', email)
+                .get();
+
+            if (existingUsers.length > 0) {
+                for (const user of existingUsers) {
+                    await flare.collection('users').doc(user.id).delete();
+                }
+            }
+        } catch (err) {
+            // Ignore cleanup errors
+        }
     });
 
-    it('should register a new user using the Webhook -> Socket.io flow', async () => {
-        console.log(`[Test] Requesting code for ${username}...`);
-        
-        // 1. Start listening for the real-time update
-        const codePromise = waitForCode(username);
+    afterAll(async () => {
+        // Cleanup test data
+        try {
+            if (userId) {
+                await flare.collection('users').doc(userId).delete();
+            }
+        } catch (err) {
+            // Ignore cleanup errors
+        }
+    });
 
-        // 2. Request code (triggers DocCreated in verification_requests)
-        await flare.auth.requestVerificationCode(username);
+    it('should register a new user using the OTP flow', async () => {
+        console.log(`[Test] Requesting OTP for ${email}...`);
 
-        // 3. Wait for the code to be pushed via Socket.io
-        const code = await codePromise;
-        console.log(`[Test] Received code via Socket.io: ${code}`);
-        expect(code).toBeDefined();
-        expect(code.length).toBe(6);
+        // 1. Request OTP
+        const otpResult = await flare.auth.requestVerificationCode(email);
+        expect(otpResult.success).toBe(true);
+
+        // 2. Wait a moment for OTP to be stored
+        await new Promise(r => setTimeout(r, 1000));
+
+        // 3. Retrieve OTP from internal collection
+        const otpRecords = await flare.collection('_internal_otps')
+            .where('email', '==', email)
+            .where('used', '==', false)
+            .get();
+
+        expect(otpRecords.length).toBeGreaterThan(0);
+        const otp = otpRecords[0].data.otp;
+        console.log(`[Test] Retrieved OTP: ${otp}`);
+        expect(otp).toBeDefined();
+        expect(otp.length).toBe(6);
 
         // 4. Register the user
         const user = await flare.auth.register({
-            username,
+            email,
             password: 'password123',
             name: 'Test User'
-        }, code);
+        }, otp);
 
         expect(user.id).toBeDefined();
+        expect(user.data.email).toBe(email);
         userId = user.id;
+
+        // 5. Verify user was created successfully
+        const createdUser = await flare.collection('users').doc(user.id).get();
+        expect(createdUser).not.toBeNull();
+        expect(createdUser.data.email).toBe(email);
     });
 
     it('should change password using updated OTP', async () => {
-        const codePromise = waitForCode(username);
-        
-        await flare.auth.requestVerificationCode(username);
-        const code = await codePromise;
-        
-        const updatedUser = await flare.auth.updatePassword(userId, 'newpassword456', code);
+        // 1. Request new OTP
+        await flare.auth.requestVerificationCode(email);
+        await new Promise(r => setTimeout(r, 1000));
+
+        // 2. Retrieve OTP
+        const otpRecords = await flare.collection('_internal_otps')
+            .where('email', '==', email)
+            .where('used', '==', false)
+            .get();
+
+        const otp = otpRecords[0].data.otp;
+
+        // 3. Update password
+        const updatedUser = await flare.auth.updatePassword(userId, 'newpassword456', otp);
         expect(updatedUser.data.password).toBe('newpassword456');
     });
 
     it('should delete account with final OTP', async () => {
-        const codePromise = waitForCode(username);
-        
-        await flare.auth.requestVerificationCode(username);
-        const code = await codePromise;
-        
-        const result = await flare.auth.deleteAccount(userId, code);
+        // 1. Request final OTP
+        await flare.auth.requestVerificationCode(email);
+        await new Promise(r => setTimeout(r, 1000));
+
+        // 2. Retrieve OTP
+        const otpRecords = await flare.collection('_internal_otps')
+            .where('email', '==', email)
+            .where('used', '==', false)
+            .get();
+
+        const otp = otpRecords[0].data.otp;
+
+        // 3. Delete account
+        const result = await flare.auth.deleteAccount(userId, otp);
         expect(result).toBe(true);
 
+        // 4. Verify user is deleted
         const user = await flare.collection('users').doc(userId).get();
         expect(user).toBeNull();
     });

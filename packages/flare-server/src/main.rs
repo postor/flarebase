@@ -1,9 +1,10 @@
 use axum::{
     extract::{Path, State},
-    routing::{get, post},
+    http::StatusCode,
+    routing::{get, post, put, delete},
     Json, Router,
 };
-use flare_db::{SledStorage, Storage};
+use flare_db::{SledStorage, Storage, memory::MemoryStorage, persistence::PersistenceManager};
 use flare_protocol::{Document, Event, EventType, Webhook, Query, TransactionRequest, BatchOperation};
 use flare_protocol::cluster::cluster_service_server::ClusterServiceServer;
 use socketioxide::{
@@ -16,15 +17,16 @@ use tonic::transport::Server;
 use tokio::time::Duration;
 use async_trait::async_trait;
 
-mod cluster;
-mod hooks;
-mod hook_manager;
-mod permissions;
+pub mod cluster;
+pub mod hooks;
+pub mod hook_manager;
+pub mod permissions;
 
-use cluster::ClusterManager;
-use hooks::{EventBus, WebhookDispatcher, WebhooksProvider};
-use hook_manager::HookManager;
-use permissions::{Authorizer, PermissionContext, ResourceType};
+// Re-export for integration tests
+pub use cluster::ClusterManager;
+pub use hooks::{EventBus, WebhookDispatcher, WebhooksProvider};
+pub use hook_manager::HookManager;
+pub use permissions::{Authorizer, PermissionContext, ResourceType};
 use flare_protocol::{HookRegister, HookResponse};
 
 #[async_trait]
@@ -33,7 +35,64 @@ impl WebhooksProvider for SledStorage {
         let docs = self.list("__webhooks__").await?;
         let mut result = Vec::new();
         for doc in docs {
-            let webhook: Webhook = serde_json::from_value(doc.data)?;
+            // Extract webhook fields directly from doc.data
+            let url = doc.data.get("url")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("Missing url in webhook"))?
+                .to_string();
+            let secret = doc.data.get("secret")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let events: Vec<EventType> = serde_json::from_value(
+                doc.data.get("events")
+                    .cloned()
+                    .unwrap_or(serde_json::json!([]))
+            )?;
+
+            let webhook = Webhook {
+                id: doc.id.clone(),
+                url,
+                events,
+                secret,
+            };
+
+            if webhook.events.contains(event_type) {
+                result.push(webhook);
+            }
+        }
+        Ok(result)
+    }
+}
+
+#[async_trait]
+impl WebhooksProvider for MemoryStorage {
+    async fn get_webhooks_for_event(&self, event_type: &EventType) -> anyhow::Result<Vec<Webhook>> {
+        use flare_db::Storage;
+
+        let docs = self.list("__webhooks__").await?;
+        let mut result = Vec::new();
+        for doc in docs {
+            // Extract webhook fields directly from doc.data
+            let url = doc.data.get("url")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("Missing url in webhook"))?
+                .to_string();
+            let secret = doc.data.get("secret")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let events: Vec<EventType> = serde_json::from_value(
+                doc.data.get("events")
+                    .cloned()
+                    .unwrap_or(serde_json::json!([]))
+            )?;
+
+            let webhook = Webhook {
+                id: doc.id.clone(),
+                url,
+                events,
+                secret,
+            };
+
             if webhook.events.contains(event_type) {
                 result.push(webhook);
             }
@@ -61,15 +120,87 @@ async fn main() -> anyhow::Result<()> {
 
     let (io_layer, io) = SocketIo::builder().build_layer();
 
-    let db_path = std::env::var("FLARE_DB_PATH").unwrap_or(format!("./flare_{}.db", node_id));
-    let storage = Arc::new(SledStorage::new(db_path)?);
+    // Storage backend selection
+    let storage_backend = std::env::var("FLARE_STORAGE_BACKEND").unwrap_or("sled".to_string());
+    let storage: Arc<dyn Storage> = match storage_backend.as_str() {
+        "memory" => {
+            tracing::info!("Using in-memory storage backend");
+
+            // Check if persistence is enabled
+            let snapshot_path = std::env::var("FLARE_MEMORY_SNAPSHOT_PATH")
+                .unwrap_or(format!("./flare_{}_memory.json", node_id));
+            let snapshot_interval = std::env::var("FLARE_MEMORY_SNAPSHOT_INTERVAL")
+                .unwrap_or("60".to_string())
+                .parse::<u64>()
+                .unwrap_or(60);
+
+            let memory_storage = MemoryStorage::new();
+
+            // Start persistence manager if snapshot path is provided
+            if !snapshot_path.is_empty() {
+                let mut persistence_manager = PersistenceManager::new(
+                    memory_storage.clone(),
+                    snapshot_path.clone(),
+                    Duration::from_secs(snapshot_interval),
+                );
+
+                persistence_manager.start().await?;
+                tracing::info!("Memory persistence enabled: snapshot every {}s to {}", snapshot_interval, snapshot_path);
+            }
+
+            Arc::new(memory_storage)
+        }
+        _ => {
+            tracing::info!("Using SledDB storage backend");
+            let db_path = std::env::var("FLARE_DB_PATH").unwrap_or(format!("./flare_{}.db", node_id));
+            Arc::new(SledStorage::new(db_path)?)
+        }
+    };
+
     let cluster = Arc::new(ClusterManager::new());
     let (event_bus, event_rx) = EventBus::new();
     let event_bus = Arc::new(event_bus);
     let hook_manager = Arc::new(HookManager::new());
 
     // --- Start webhook dispatcher before creating state ---
-    let webhooks_provider = storage.clone() as Arc<dyn WebhooksProvider>;
+    // Create a simple wrapper that implements WebhooksProvider
+    let webhooks_provider = {
+        struct ProviderWrapper(Arc<dyn Storage>);
+        #[async_trait::async_trait]
+        impl WebhooksProvider for ProviderWrapper {
+            async fn get_webhooks_for_event(&self, event_type: &EventType) -> anyhow::Result<Vec<Webhook>> {
+                let docs = self.0.list("__webhooks__").await?;
+                let mut result = Vec::new();
+                for doc in docs {
+                    let url = doc.data.get("url")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| anyhow::anyhow!("Missing url in webhook"))?
+                        .to_string();
+                    let secret = doc.data.get("secret")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    let events: Vec<EventType> = serde_json::from_value(
+                        doc.data.get("events")
+                            .cloned()
+                            .unwrap_or(serde_json::json!([]))
+                    )?;
+
+                    let webhook = Webhook {
+                        id: doc.id.clone(),
+                        url,
+                        events,
+                        secret,
+                    };
+
+                    if webhook.events.contains(event_type) {
+                        result.push(webhook);
+                    }
+                }
+                Ok(result)
+            }
+        }
+        Arc::new(ProviderWrapper(storage.clone()))
+    };
     tokio::spawn(async move {
         let dispatcher = WebhookDispatcher::new();
         dispatcher.run(event_rx, webhooks_provider).await;
@@ -100,13 +231,22 @@ async fn main() -> anyhow::Result<()> {
         socket.on("call_hook", move |socket: SocketRef, Data((event, params)): Data<(String, serde_json::Value)>| {
             let stc = Arc::clone(&st);
             let session_id = socket.id.to_string();
+            let event_name = event.clone();
             tokio::spawn(async move {
                 match stc.hook_manager.call_hook(event, session_id, params, |hook_sid, req_data| {
-                    // Send to the hook socket in /hooks namespace
-                    let _ = stc.io.to(hook_sid).emit("hook_request", &req_data);
+                    // Send to the hook socket in /hooks namespace by targeting the global hook room
+                    tracing::info!("Sending hook request to socket {} for event {}", hook_sid, event_name);
+                    // Use the global hook room that the hook socket joined
+                    let _ = stc.io.to(format!("global_hook_{}", hook_sid)).emit("hook_request", &req_data);
                 }).await {
-                    Ok(res) => { let _ = socket.emit("hook_success", &res); }
-                    Err(e) => { let _ = socket.emit("hook_error", &e.to_string()); }
+                    Ok(res) => {
+                        tracing::info!("Hook call successful for event {:?}", res);
+                        let _ = socket.emit("hook_success", &res);
+                    }
+                    Err(e) => {
+                        tracing::error!("Hook call failed for event {}: {}", event_name, e);
+                        let _ = socket.emit("hook_error", &e.to_string());
+                    }
                 }
             });
         });
@@ -116,7 +256,13 @@ async fn main() -> anyhow::Result<()> {
     io.ns("/hooks", move |socket: SocketRef| {
         let hm = Arc::clone(&hook_manager_ns);
         let sid = socket.id.to_string();
-        
+
+        // Join a room with the same name as the socket ID for easy targeting
+        socket.join(sid.clone());
+
+        // Also join a global hook room that can be targeted from any namespace
+        socket.join(format!("global_hook_{}", sid));
+
         socket.on("register", move |socket: SocketRef, Data(reg): Data<HookRegister>| {
             hm.register_hook(socket.id.to_string(), reg);
         });
@@ -158,7 +304,9 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/collections/:collection", post(create_doc).get(list_docs))
-        .route("/collections/:collection/:id", get(get_doc).put(update_doc).delete(delete_doc))
+        .route("/collections/:collection/:id", get(get_doc))
+        .route("/collections/:collection/:id", put(update_doc))
+        .route("/collections/:collection/:id", delete(delete_doc))
         .route("/query", post(run_query))
         .route("/transaction", post(commit_transaction))
         .route("/call_hook/:event", post(call_hook))
@@ -213,20 +361,38 @@ async fn update_doc(
     Path((collection, id)): Path<(String, String)>,
     Json(data): Json<serde_json::Value>,
 ) -> Json<Document> {
-    let mut doc = state.storage.get(&collection, &id).await.unwrap().expect("Document not found");
-    doc.data = data;
-    doc.version += 1;
-    doc.updated_at = chrono::Utc::now().timestamp_millis();
+    let (doc, is_new) = match state.storage.get(&collection, &id).await.unwrap() {
+        Some(mut d) => {
+            d.data = data;
+            d.version += 1;
+            d.updated_at = chrono::Utc::now().timestamp_millis();
+            (d, false)
+        }
+        None => {
+            // Create new document with specific ID (upsert behavior)
+            let mut doc = Document::new(collection.clone(), data);
+            doc.id = id;
+            (doc, true)
+        }
+    };
 
     let _ = state.storage.insert(doc.clone()).await;
 
-    broadcast_op(Arc::clone(&state), collection, "doc_updated", serde_json::to_value(&doc).unwrap()).await;
-
-    let _ = state.event_bus.emit(Event {
-        event_type: EventType::DocUpdated,
-        payload: serde_json::to_value(&doc).unwrap(),
-        timestamp: doc.updated_at,
-    });
+    if is_new {
+        broadcast_op(Arc::clone(&state), collection.clone(), "doc_created", serde_json::to_value(&doc).unwrap()).await;
+        let _ = state.event_bus.emit(Event {
+            event_type: EventType::DocCreated,
+            payload: serde_json::to_value(&doc).unwrap(),
+            timestamp: doc.updated_at,
+        });
+    } else {
+        broadcast_op(Arc::clone(&state), collection.clone(), "doc_updated", serde_json::to_value(&doc).unwrap()).await;
+        let _ = state.event_bus.emit(Event {
+            event_type: EventType::DocUpdated,
+            payload: serde_json::to_value(&doc).unwrap(),
+            timestamp: doc.updated_at,
+        });
+    }
 
     Json(doc)
 }
@@ -309,12 +475,20 @@ async fn call_hook(
     Json(params): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     let io = state.io.clone();
-    match state.hook_manager.call_hook(event, "REST".to_string(), params, |hook_sid, req_data| {
-        // Send to the hook socket in /hooks namespace
-        let _ = io.to(hook_sid).emit("hook_request", &req_data);
+    match state.hook_manager.call_hook(event.clone(), "REST".to_string(), params, |hook_sid, req_data| {
+        // Send to the hook socket in /hooks namespace by targeting the global hook room
+        tracing::info!("HTTP: Sending hook request to socket {} for event {}", hook_sid, event);
+        // Use the global hook room that the hook socket joined
+        let _ = io.to(format!("global_hook_{}", hook_sid)).emit("hook_request", &req_data);
     }).await {
-        Ok(res) => Json(res),
-        Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+        Ok(res) => {
+            tracing::info!("HTTP: Hook call successful for event {:?}", res);
+            Json(res)
+        }
+        Err(e) => {
+            tracing::error!("HTTP: Hook call failed for event {}: {}", event, e);
+            Json(serde_json::json!({ "error": e.to_string() }))
+        }
     }
 }
 
@@ -358,7 +532,7 @@ mod tests {
     async fn test_redact_internal_fields() {
         let dir = tempdir().unwrap();
         let storage = Arc::new(flare_db::SledStorage::new(dir.path()).unwrap());
-        
+
         let mut policy = Document::new("__config__".to_string(), json!({ "internal": ["password", "secret"] }));
         policy.id = "sync_policy_users".to_string();
         storage.insert(policy).await.unwrap();
