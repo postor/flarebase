@@ -12,6 +12,8 @@ pub trait Storage: Send + Sync {
     async fn delete(&self, collection: &str, id: &str) -> anyhow::Result<()>;
     async fn list(&self, collection: &str) -> anyhow::Result<Vec<Document>>;
     async fn query(&self, query: flare_protocol::Query) -> anyhow::Result<Vec<Document>>;
+    async fn export_all(&self) -> anyhow::Result<serde_json::Value>;
+    async fn import_all(&self, data: serde_json::Value) -> anyhow::Result<()>;
 }
 
 pub struct SledStorage {
@@ -98,6 +100,43 @@ impl Storage for SledStorage {
         }
 
         Ok(result)
+    }
+
+    async fn export_all(&self) -> anyhow::Result<serde_json::Value> {
+        let mut collections = serde_json::Map::new();
+        for name in self.db.tree_names() {
+            let tree_name = String::from_utf8_lossy(&name);
+            if tree_name == "__sled__default" { continue; }
+            
+            let tree = self.db.open_tree(&*tree_name)?;
+            let mut docs = Vec::new();
+            for item in tree.iter() {
+                let (_key, val) = item?;
+                let doc: Document = serde_json::from_slice(&val)?;
+                docs.push(doc);
+            }
+            collections.insert(tree_name.to_string(), serde_json::Value::Array(
+                docs.into_iter().map(|d| serde_json::to_value(d).unwrap()).collect()
+            ));
+        }
+        Ok(serde_json::Value::Object(collections))
+    }
+
+    async fn import_all(&self, data: serde_json::Value) -> anyhow::Result<()> {
+        if let Some(obj) = data.as_object() {
+            for (col_name, docs_val) in obj {
+                let tree = self.db.open_tree(col_name)?;
+                if let Some(docs_arr) = docs_val.as_array() {
+                    for doc_val in docs_arr {
+                        let doc: Document = serde_json::from_value(doc_val.clone())?;
+                        let key = doc.id.as_bytes();
+                        let val = serde_json::to_vec(&doc)?;
+                        tree.insert(key, val)?;
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }
 
