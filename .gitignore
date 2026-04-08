@@ -7,11 +7,16 @@ target/
 *.db-journal
 flare_*.db/
 
+# Build error logs
+*_error.txt
+*_errors.txt
+
 # Node.js / Client artifacts
 node_modules/
 dist/
 .npm
 build/
+package-lock.json
 
 # Environment and sensitive files
 .env

@@ -6,6 +6,37 @@ export class FlareClient {
         this.socket = io(baseURL);
     }
 
+    async callHook(eventName, params) {
+        return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                this.socket.off('hook_success');
+                this.socket.off('hook_error');
+                reject(new Error('Hook request timed out'));
+            }, 10000);
+
+            this.socket.once('hook_success', (data) => {
+                clearTimeout(timeout);
+                this.socket.off('hook_error');
+                resolve(data);
+            });
+
+            this.socket.once('hook_error', (err) => {
+                clearTimeout(timeout);
+                this.socket.off('hook_success');
+                reject(new Error(err));
+            });
+
+            this.socket.emit('call_hook', [eventName, params]);
+        });
+    }
+
+    sessionTable(name) {
+        if (!this.socket.id) {
+            throw new Error('Socket not connected. Session ID not available.');
+        }
+        return this.collection(`_session_${this.socket.id}_${name}`);
+    }
+
     collection(name) {
         return new CollectionReference(this, name);
     }
@@ -226,7 +257,7 @@ class Transaction {
         this.operations = [];
     }
 
-    async get(docRef) {
+    async get(docRef, precondition = null) {
         return docRef.get();
     }
 
@@ -264,5 +295,47 @@ class Transaction {
             }
         });
         return this;
+    }
+}
+
+export class FlareHook {
+    constructor(baseURL, token, options = { events: [] }) {
+        this.socket = io(`${baseURL}/hooks`);
+        this.token = token;
+        this.options = options;
+        this.handlers = new Map();
+
+        this.socket.on('connect', () => {
+            this.socket.emit('register', {
+                token: this.token,
+                capabilities: {
+                    events: this.options.events,
+                    user_context: this.options.userContext || {}
+                }
+            });
+        });
+
+        this.socket.on('hook_request', async (req) => {
+            if (this.handlers.has(req.event_name)) {
+                try {
+                    const data = await this.handlers.get(req.event_name)(req);
+                    this.socket.emit('hook_response', {
+                        request_id: req.request_id,
+                        status: 'success',
+                        data
+                    });
+                } catch (error) {
+                    this.socket.emit('hook_response', {
+                        request_id: req.request_id,
+                        status: 'error',
+                        error: error.message
+                    });
+                }
+            }
+        });
+    }
+
+    on(event, handler) {
+        this.handlers.set(event, handler);
     }
 }

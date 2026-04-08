@@ -101,3 +101,31 @@ pub struct Webhook {
     pub events: Vec<EventType>,
     pub secret: Option<String>,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct HookCapabilities {
+    pub events: Vec<String>,
+    pub user_context: Value,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct HookRegister {
+    pub token: String,
+    pub capabilities: HookCapabilities,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct HookRequest {
+    pub request_id: String,
+    pub event_name: String,
+    pub session_id: String,
+    pub params: Value,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct HookResponse {
+    pub request_id: String,
+    pub status: String,
+    pub data: Option<Value>,
+    pub error: Option<Value>,
+}
