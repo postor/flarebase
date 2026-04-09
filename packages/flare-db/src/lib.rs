@@ -7,6 +7,7 @@ use chrono;
 // Re-export modules
 pub mod memory;
 pub mod persistence;
+pub mod redb;
 
 
 

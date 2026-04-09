@@ -8,6 +8,7 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 flare-protocol = { path = "../flare-protocol" }
 sled = { workspace = true }
+redb = "2.1"
 serde_json = { workspace = true }
 serde = { workspace = true }
 chrono = { workspace = true }
