@@ -1,0 +1,187 @@
+{
+  "queries": {
+    "list_published_posts": {
+      "type": "simple",
+      "collection": "posts",
+      "filters": [
+        ["status", {"Eq": "published"}]
+      ],
+      "limit": "$params.limit",
+      "offset": "$params.offset"
+    },
+    "list_my_posts": {
+      "type": "simple",
+      "collection": "posts",
+      "filters": [
+        ["author_id", {"Eq": "$USER_ID"}]
+      ],
+      "limit": "$params.limit",
+      "offset": "$params.offset"
+    },
+    "get_post_by_id": {
+      "type": "simple",
+      "collection": "posts",
+      "filters": [
+        ["id", {"Eq": "$params.id"}]
+      ]
+    },
+    "get_post_by_slug": {
+      "type": "simple",
+      "collection": "posts",
+      "filters": [
+        ["slug", {"Eq": "$params.slug"}]
+      ]
+    },
+    "get_published_post": {
+      "type": "simple",
+      "collection": "posts",
+      "filters": [
+        ["id", {"Eq": "$params.id"}],
+        ["status", {"Eq": "published"}]
+      ]
+    },
+    "search_posts": {
+      "type": "simple",
+      "collection": "posts",
+      "filters": [
+        ["status", {"Eq": "published"}],
+        ["title", {"Contains": "$params.keyword"}]
+      ],
+      "limit": "$params.limit"
+    },
+    "get_post_with_author": {
+      "type": "pipeline",
+      "steps": [
+        {
+          "id": "post",
+          "action": "get",
+          "collection": "posts",
+          "id_param": "$params.id"
+        },
+        {
+          "id": "author",
+          "action": "get",
+          "collection": "users",
+          "id_param": "$post.data.author_id"
+        }
+      ],
+      "output": {
+        "id": "$post.id",
+        "title": "$post.data.title",
+        "content": "$post.data.content",
+        "status": "$post.data.status",
+        "created_at": "$post.data.created_at",
+        "updated_at": "$post.data.updated_at",
+        "author": {
+          "id": "$author.id",
+          "name": "$author.data.name",
+          "avatar": "$author.data.avatar",
+          "bio": "$author.data.bio"
+        }
+      }
+    },
+    "list_posts_with_comments": {
+      "type": "pipeline",
+      "steps": [
+        {
+          "id": "posts",
+          "action": "find",
+          "collection": "posts",
+          "filters": [
+            ["status", {"Eq": "published"}]
+          ]
+        },
+        {
+          "id": "comments",
+          "action": "find",
+          "collection": "comments"
+        }
+      ],
+      "output": {
+        "posts": "$posts.results",
+        "total_comments": "$comments.count"
+      }
+    },
+    "get_my_profile": {
+      "type": "simple",
+      "collection": "users",
+      "filters": [
+        ["id", {"Eq": "$USER_ID"}]
+      ]
+    },
+    "get_user_by_email": {
+      "type": "simple",
+      "collection": "users",
+      "filters": [
+        ["email", {"Eq": "$params.email"}]
+      ]
+    },
+    "check_email_exists": {
+      "type": "simple",
+      "collection": "users",
+      "filters": [
+        ["email", {"Eq": "$params.email"}]
+      ]
+    },
+    "get_user_profile": {
+      "type": "simple",
+      "collection": "users",
+      "filters": [
+        ["id", {"Eq": "$params.id"}]
+      ]
+    },
+    "list_my_comments": {
+      "type": "simple",
+      "collection": "comments",
+      "filters": [
+        ["author_id", {"Eq": "$USER_ID"}]
+      ],
+      "limit": "$params.limit"
+    },
+    "get_post_comments": {
+      "type": "simple",
+      "collection": "comments",
+      "filters": [
+        ["post_id", {"Eq": "$params.post_id"}]
+      ],
+      "limit": "$params.limit"
+    },
+    "admin_list_all_users": {
+      "type": "simple",
+      "collection": "users",
+      "limit": "$params.limit",
+      "offset": "$params.offset"
+    },
+    "admin_list_all_posts": {
+      "type": "simple",
+      "collection": "posts",
+      "limit": "$params.limit",
+      "offset": "$params.offset"
+    },
+    "admin_get_stats": {
+      "type": "pipeline",
+      "steps": [
+        {
+          "id": "post_count",
+          "action": "count",
+          "collection": "posts"
+        },
+        {
+          "id": "user_count",
+          "action": "count",
+          "collection": "users"
+        },
+        {
+          "id": "comment_count",
+          "action": "count",
+          "collection": "comments"
+        }
+      ],
+      "output": {
+        "total_posts": "$post_count.count",
+        "total_users": "$user_count.count",
+        "total_comments": "$comment_count.count"
+      }
+    }
+  }
+}

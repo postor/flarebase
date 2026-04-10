@@ -1,29 +1,120 @@
 import React, { createContext, useContext, useMemo, useState, useEffect, useCallback, useRef } from 'react';
 import { io } from 'socket.io-client';
+import { FlareClient } from '@flarebase/client';
 
 // 创建 Context
 const FlarebaseContext = createContext(null);
 
-// Provider 组件
-export function FlarebaseProvider({ baseURL, children }) {
+// Provider 组件 with JWT support
+export function FlarebaseProvider({ baseURL, children, initialJWT = null, initialUser = null }) {
+  // Create FlareClient instance
+  const flareClient = useMemo(() => {
+    return new FlareClient(baseURL);
+  }, [baseURL]);
+
+  // Restore JWT from localStorage or use initial JWT
+  useEffect(() => {
+    if (initialJWT) {
+      flareClient._setJWT(initialJWT, initialUser);
+    }
+  }, [flareClient, initialJWT, initialUser]);
+
+  // Auth state
+  const [authState, setAuthState] = useState({
+    isAuthenticated: flareClient.auth.isAuthenticated,
+    user: flareClient.auth.user,
+    jwt: flareClient.jwt
+  });
+
+  // Update auth state when client auth changes
+  useEffect(() => {
+    const updateAuthState = () => {
+      setAuthState({
+        isAuthenticated: flareClient.auth.isAuthenticated,
+        user: flareClient.auth.user,
+        jwt: flareClient.jwt
+      });
+    };
+
+    // Initial sync
+    updateAuthState();
+
+    // Listen for storage events (for multi-tab sync)
+    const handleStorageChange = (e) => {
+      if (e.key === 'flarebase_jwt' || e.key === 'flarebase_user') {
+        updateAuthState();
+      }
+    };
+
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
+  }, [flareClient]);
+
+  // Client object with auth methods
   const client = useMemo(() => {
     const socketInstance = io(baseURL);
     return {
       baseURL,
       socket: socketInstance,
+      // Auth methods
+      login: async (credentials) => {
+        const result = await flareClient.login(credentials);
+        setAuthState({
+          isAuthenticated: true,
+          user: flareClient.auth.user,
+          jwt: flareClient.jwt
+        });
+        return result;
+      },
+      register: async (userData) => {
+        const result = await flareClient.register(userData);
+        setAuthState({
+          isAuthenticated: true,
+          user: flareClient.auth.user,
+          jwt: flareClient.jwt
+        });
+        return result;
+      },
+      logout: () => {
+        flareClient.logout();
+        setAuthState({
+          isAuthenticated: false,
+          user: null,
+          jwt: null
+        });
+      },
+      // Auth state
+      auth: {
+        get isAuthenticated() {
+          return flareClient.auth.isAuthenticated;
+        },
+        get user() {
+          return flareClient.auth.user;
+        },
+        get jwt() {
+          return flareClient.jwt;
+        }
+      },
+      // Collection methods
       collection: (name) => {
-        return new CollectionReference(client, name);
+        return flareClient.collection(name);
       },
       query: async (collection, filters = []) => {
-        const response = await fetch(`${client.baseURL}/query`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ collection, filters })
-        });
-        return response.json();
+        return await flareClient.query(collection, filters);
+      },
+      // Named queries
+      namedQuery: (queryName, params) => {
+        return flareClient.namedQuery(queryName, params);
+      },
+      // SWR fetchers
+      createSWRFetcher: (queryName) => {
+        return flareClient.createSWRFetcher(queryName);
+      },
+      get swrFetcher() {
+        return flareClient.swrFetcher;
       }
     };
-  }, [baseURL]);
+  }, [baseURL, flareClient, authState]);
 
   return (
     <FlarebaseContext.Provider value={client}>
@@ -46,6 +137,7 @@ export function useFlarebase() {
 // useFlarebaseSWR - Collection data with SWR
 export function useFlarebaseSWR(collectionName, options = {}) {
   const client = useFlarebase();
+  const flareClient = useMemo(() => new FlareClient(client.baseURL), [client.baseURL]);
   const {
     revalidateOnFocus = true,
     revalidateInterval = false,
@@ -73,7 +165,14 @@ export function useFlarebaseSWR(collectionName, options = {}) {
         return result;
       }
 
-      const response = await fetch(`${client.baseURL}/collections/${collectionName}`);
+      // Use authenticated fetch if JWT is available
+      const headers = client.auth?.jwt
+        ? { 'Content-Type': 'application/json', 'Authorization': `Bearer ${client.auth.jwt}` }
+        : { 'Content-Type': 'application/json' };
+
+      const response = await fetch(`${client.baseURL}/collections/${collectionName}`, {
+        headers
+      });
       const result = await response.json();
       setData(result);
       return result;
@@ -84,7 +183,7 @@ export function useFlarebaseSWR(collectionName, options = {}) {
       setIsLoading(false);
       setIsValidating(false);
     }
-  }, [client.baseURL, collectionName, customFetcher, enabled]);
+  }, [client.baseURL, collectionName, customFetcher, enabled, client.auth?.jwt]);
 
   // Initial fetch
   useEffect(() => {

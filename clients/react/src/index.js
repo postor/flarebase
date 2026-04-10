@@ -1,43 +1,89 @@
-import React, { createContext, useContext, useMemo } from 'react';
-import { io } from 'socket.io-client';
+import React, { createContext, useContext, useMemo, useState, useEffect } from 'react';
+import { FlareClient } from '@flarebase/client';
 
 // 创建 Context
 const FlarebaseContext = createContext(null);
+const AuthContext = createContext(null);
 
 // Provider 组件
-export function FlarebaseProvider({ baseURL, children }) {
+export function FlarebaseProvider({ baseURL = 'http://localhost:3000', children }) {
   // 使用 useMemo 创建客户端实例
   const client = useMemo(() => {
-    return {
-      baseURL,
-      socket: io(baseURL),
-      collection: (name) => {
-        // 这里将使用现有的 JS SDK 逻辑
-        return new CollectionReference(client, name);
-      },
-      query: async (collection, filters = [], limit, offset) => {
-        const response = await fetch(`${baseURL}/query`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ collection, filters, limit, offset })
-        });
-        return response.json();
-      }
-    };
+    return new FlareClient(baseURL);
   }, [baseURL]);
 
   return (
     <FlarebaseContext.Provider value={client}>
-      {children}
+      <AuthProvider client={client}>
+        {children}
+      </AuthProvider>
     </FlarebaseContext.Provider>
   );
 }
 
-// Hook
+// Auth Provider
+export function AuthProvider({ client, children }) {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    // Check if user is already authenticated
+    if (client.auth.isAuthenticated) {
+      setUser(client.auth.user);
+    }
+    setLoading(false);
+
+    // Optional: Listen to auth state changes
+    // This would require the SDK to emit events when auth state changes
+  }, [client]);
+
+  const login = async (credentials) => {
+    const result = await client.login(credentials);
+    setUser(client.auth.user);
+    return result;
+  };
+
+  const register = async (userData) => {
+    const result = await client.register(userData);
+    setUser(client.auth.user);
+    return result;
+  };
+
+  const logout = () => {
+    client.logout();
+    setUser(null);
+  };
+
+  const authValue = useMemo(() => ({
+    user,
+    loading,
+    isAuthenticated: !!user,
+    login,
+    register,
+    logout
+  }), [user, loading]);
+
+  return (
+    <AuthContext.Provider value={authValue}>
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+// Flarebase Hook
 export function useFlarebase() {
   const context = useContext(FlarebaseContext);
   if (!context) {
     throw new Error('useFlarebase must be used within a FlarebaseProvider');
+  }
+  return context;
+}
+
+// Auth Hook
+export function useAuth() {
+  const context = useContext(AuthContext);
+  if (!context === undefined) {
+    throw new Error('useAuth must be used within a FlarebaseProvider');
   }
   return context;
 }

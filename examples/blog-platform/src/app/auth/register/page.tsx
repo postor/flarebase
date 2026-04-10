@@ -37,8 +37,8 @@ export default function RegisterPage() {
     try {
       const flarebase = getFlarebaseClient();
 
-      // Check if user already exists
-      const existingUsers = await flarebase.query<any>([['email', { Eq: formData.email }]]);
+      // ✅ Check if user already exists using secure whitelist query
+      const existingUsers = await flarebase.blogQueries.checkEmailExists(formData.email);
 
       if (existingUsers.length > 0) {
         setError('User with this email already exists');
@@ -58,7 +58,7 @@ export default function RegisterPage() {
         // password: await hashPassword(formData.password)
       };
 
-      const result = await flarebase.collection('users').add(userData);
+      const result: any = await flarebase.collection('users').add(userData);
       console.log('User created:', result);
 
       // Create session

@@ -21,7 +21,8 @@ export default function PostPage() {
 
       try {
         const flarebase = getFlarebaseClient();
-        const posts = await flarebase.query<Post>([['slug', { Eq: slug }]]);
+        // ✅ 使用安全的白名单查询
+        const posts: any = await flarebase.blogQueries.getPostBySlug(slug);
 
         if (posts.length === 0) {
           setError('Post not found');

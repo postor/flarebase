@@ -55,7 +55,7 @@ describe('Registration Flows (Comprehensive)', () => {
             const email = 'otp-request-test@example.com';
 
             // Request OTP
-            const result = await flare.auth.requestVerificationCode(email);
+            const result = await flare.otpAuth.requestVerificationCode(email);
             expect(result).toBeDefined();
             expect(result.success).toBe(true);
             expect(result.message).toContain('sent');
@@ -71,8 +71,8 @@ describe('Registration Flows (Comprehensive)', () => {
             const email2 = 'concurrent2@example.com';
 
             const [result1, result2] = await Promise.all([
-                flare.auth.requestVerificationCode(email1),
-                flare.auth.requestVerificationCode(email2)
+                flare.otpAuth.requestVerificationCode(email1),
+                flare.otpAuth.requestVerificationCode(email2)
             ]);
 
             expect(result1.success).toBe(true);
@@ -87,7 +87,7 @@ describe('Registration Flows (Comprehensive)', () => {
             const email = `reg-${Date.now()}@example.com`;
 
             // Step 1: Request OTP
-            const otpRequest = await flare.auth.requestVerificationCode(email);
+            const otpRequest = await flare.otpAuth.requestVerificationCode(email);
             expect(otpRequest.success).toBe(true);
 
             // Step 2: Wait for OTP (in real scenario, this comes from email/WebSocket)
@@ -105,7 +105,7 @@ describe('Registration Flows (Comprehensive)', () => {
             expect(otp).toHaveLength(6);
 
             // Step 4: Register user with OTP
-            const user = await flare.auth.register({
+            const user = await flare.otpAuth.register({
                 email,
                 password: testPassword,
                 name: 'Test User',
@@ -128,7 +128,7 @@ describe('Registration Flows (Comprehensive)', () => {
         it('should create user with correct default fields', async () => {
             const email = `defaults-${Date.now()}@example.com`;
 
-            await flare.auth.requestVerificationCode(email);
+            await flare.otpAuth.requestVerificationCode(email);
             await new Promise(r => setTimeout(r, 1000));
 
             const otpRecords = await flare.collection('_internal_otps')
@@ -137,7 +137,7 @@ describe('Registration Flows (Comprehensive)', () => {
                 .get();
 
             const otp = otpRecords[0].data.otp;
-            const user = await flare.auth.register({
+            const user = await flare.otpAuth.register({
                 email,
                 password: testPassword,
                 name: 'Default Test User'
@@ -158,12 +158,12 @@ describe('Registration Flows (Comprehensive)', () => {
         it('should reject registration with invalid OTP', async () => {
             const email = `invalid-otp-${Date.now()}@example.com`;
 
-            await flare.auth.requestVerificationCode(email);
+            await flare.otpAuth.requestVerificationCode(email);
             await new Promise(r => setTimeout(r, 500));
 
             // Try to register with wrong OTP
             await expect(
-                flare.auth.register({
+                flare.otpAuth.register({
                     email,
                     password: testPassword,
                     name: 'Invalid OTP User'
@@ -176,7 +176,7 @@ describe('Registration Flows (Comprehensive)', () => {
         it('should reject expired OTP', async () => {
             const email = `expired-${Date.now()}@example.com`;
 
-            await flare.auth.requestVerificationCode(email);
+            await flare.otpAuth.requestVerificationCode(email);
             await new Promise(r => setTimeout(r, 500));
 
             // Get the OTP record
@@ -194,7 +194,7 @@ describe('Registration Flows (Comprehensive)', () => {
 
                 // Try to use expired OTP
                 await expect(
-                    flare.auth.register({
+                    flare.otpAuth.register({
                         email,
                         password: testPassword,
                         name: 'Expired OTP User'
@@ -209,7 +209,7 @@ describe('Registration Flows (Comprehensive)', () => {
             const email = `duplicate-${Date.now()}@example.com`;
 
             // First registration
-            await flare.auth.requestVerificationCode(email);
+            await flare.otpAuth.requestVerificationCode(email);
             await new Promise(r => setTimeout(r, 1000));
 
             let otpRecords = await flare.collection('_internal_otps')
@@ -217,7 +217,7 @@ describe('Registration Flows (Comprehensive)', () => {
                 .where('used', '==', false)
                 .get();
 
-            const user1 = await flare.auth.register({
+            const user1 = await flare.otpAuth.register({
                 email,
                 password: testPassword,
                 name: 'First User'
@@ -226,7 +226,7 @@ describe('Registration Flows (Comprehensive)', () => {
             expect(user1.id).toBeDefined();
 
             // Try to register again with same email
-            await flare.auth.requestVerificationCode(email);
+            await flare.otpAuth.requestVerificationCode(email);
             await new Promise(r => setTimeout(r, 1000));
 
             otpRecords = await flare.collection('_internal_otps')
@@ -235,7 +235,7 @@ describe('Registration Flows (Comprehensive)', () => {
                 .get();
 
             await expect(
-                flare.auth.register({
+                flare.otpAuth.register({
                     email,
                     password: testPassword,
                     name: 'Second User'
@@ -253,7 +253,7 @@ describe('Registration Flows (Comprehensive)', () => {
             const password = 'ReuseTest123!';
 
             // First registration
-            await flare.auth.requestVerificationCode(email);
+            await flare.otpAuth.requestVerificationCode(email);
             await new Promise(r => setTimeout(r, 1000));
 
             let otpRecords = await flare.collection('_internal_otps')
@@ -261,7 +261,7 @@ describe('Registration Flows (Comprehensive)', () => {
                 .where('used', '==', false)
                 .get();
 
-            const user1 = await flare.auth.register({
+            const user1 = await flare.otpAuth.register({
                 email,
                 password,
                 name: 'First Registration'
@@ -271,7 +271,7 @@ describe('Registration Flows (Comprehensive)', () => {
 
             // Try to reuse the same OTP
             await expect(
-                flare.auth.register({
+                flare.otpAuth.register({
                     email,
                     password: 'AnotherPass123!',
                     name: 'Second Registration'
@@ -287,7 +287,7 @@ describe('Registration Flows (Comprehensive)', () => {
         it('should handle missing required fields', async () => {
             const email = `missing-fields-${Date.now()}@example.com`;
 
-            await flare.auth.requestVerificationCode(email);
+            await flare.otpAuth.requestVerificationCode(email);
             await new Promise(r => setTimeout(r, 1000));
 
             const otpRecords = await flare.collection('_internal_otps')
@@ -297,7 +297,7 @@ describe('Registration Flows (Comprehensive)', () => {
 
             // Try to register without email
             await expect(
-                flare.auth.register({
+                flare.otpAuth.register({
                     password: testPassword,
                     name: 'No Email User'
                 }, otpRecords[0].data.otp)
@@ -315,8 +315,8 @@ describe('Registration Flows (Comprehensive)', () => {
 
             // Request OTP from two different sessions
             const [result1, result2] = await Promise.all([
-                flare.auth.requestVerificationCode(email, session1),
-                flare.auth.requestVerificationCode(email, session2)
+                flare.otpAuth.requestVerificationCode(email, session1),
+                flare.otpAuth.requestVerificationCode(email, session2)
             ]);
 
             expect(result1.success).toBe(true);
@@ -340,7 +340,7 @@ describe('Registration Flows (Comprehensive)', () => {
             const email = `e2e-${Date.now()}@example.com`;
 
             // Step 1: Request OTP
-            const otpResult = await flare.auth.requestVerificationCode(email);
+            const otpResult = await flare.otpAuth.requestVerificationCode(email);
             expect(otpResult.success).toBe(true);
 
             // Step 2: Get OTP
@@ -352,14 +352,14 @@ describe('Registration Flows (Comprehensive)', () => {
             const otp = otpRecords[0].data.otp;
 
             // Step 3: Register
-            const user = await flare.auth.register({
+            const user = await flare.otpAuth.register({
                 email,
                 password: testPassword,
                 name: 'E2E Test User'
             }, otp);
 
             // Step 4: Change password
-            await flare.auth.requestVerificationCode(email);
+            await flare.otpAuth.requestVerificationCode(email);
             await new Promise(r => setTimeout(r, 1000));
 
             const newOtpRecords = await flare.collection('_internal_otps')
@@ -368,7 +368,7 @@ describe('Registration Flows (Comprehensive)', () => {
                 .get();
             const newOtp = newOtpRecords[0].data.otp;
 
-            const updatedUser = await flare.auth.updatePassword(
+            const updatedUser = await flare.otpAuth.updatePassword(
                 user.id,
                 'NewPassword456!',
                 newOtp
@@ -376,7 +376,7 @@ describe('Registration Flows (Comprehensive)', () => {
             expect(updatedUser.data.password).toBe('NewPassword456!');
 
             // Step 5: Delete account
-            await flare.auth.requestVerificationCode(email);
+            await flare.otpAuth.requestVerificationCode(email);
             await new Promise(r => setTimeout(r, 1000));
 
             const finalOtpRecords = await flare.collection('_internal_otps')
@@ -385,7 +385,7 @@ describe('Registration Flows (Comprehensive)', () => {
                 .get();
             const finalOtp = finalOtpRecords[0].data.otp;
 
-            const deleted = await flare.auth.deleteAccount(user.id, finalOtp);
+            const deleted = await flare.otpAuth.deleteAccount(user.id, finalOtp);
             expect(deleted).toBe(true);
 
             // Verify user is deleted
@@ -448,12 +448,12 @@ describe('Registration Flows (Comprehensive)', () => {
             const email = `retry-${Date.now()}@example.com`;
 
             // First request
-            const result1 = await flare.auth.requestVerificationCode(email);
+            const result1 = await flare.otpAuth.requestVerificationCode(email);
             expect(result1.success).toBe(true);
 
             // Immediate retry (should generate new OTP)
             await new Promise(r => setTimeout(r, 100));
-            const result2 = await flare.auth.requestVerificationCode(email);
+            const result2 = await flare.otpAuth.requestVerificationCode(email);
             expect(result2.success).toBe(true);
 
             await new Promise(r => setTimeout(r, 1000));

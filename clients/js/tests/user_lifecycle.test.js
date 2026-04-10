@@ -53,7 +53,7 @@ describe('User Lifecycle (Integration)', () => {
         console.log(`[Test] Requesting OTP for ${email}...`);
 
         // 1. Request OTP
-        const otpResult = await flare.auth.requestVerificationCode(email);
+        const otpResult = await flare.otpAuth.requestVerificationCode(email);
         expect(otpResult.success).toBe(true);
 
         // 2. Wait a moment for OTP to be stored
@@ -72,7 +72,7 @@ describe('User Lifecycle (Integration)', () => {
         expect(otp.length).toBe(6);
 
         // 4. Register the user
-        const user = await flare.auth.register({
+        const user = await flare.otpAuth.register({
             email,
             password: 'password123',
             name: 'Test User'
@@ -102,13 +102,13 @@ describe('User Lifecycle (Integration)', () => {
         const otp = otpRecords[0].data.otp;
 
         // 3. Update password
-        const updatedUser = await flare.auth.updatePassword(userId, 'newpassword456', otp);
+        const updatedUser = await flare.otpAuth.updatePassword(userId, 'newpassword456', otp);
         expect(updatedUser.data.password).toBe('newpassword456');
     });
 
     it('should delete account with final OTP', async () => {
         // 1. Request final OTP
-        await flare.auth.requestVerificationCode(email);
+        await flare.otpAuth.requestVerificationCode(email);
         await new Promise(r => setTimeout(r, 1000));
 
         // 2. Retrieve OTP
@@ -120,7 +120,7 @@ describe('User Lifecycle (Integration)', () => {
         const otp = otpRecords[0].data.otp;
 
         // 3. Delete account
-        const result = await flare.auth.deleteAccount(userId, otp);
+        const result = await flare.otpAuth.deleteAccount(userId, otp);
         expect(result).toBe(true);
 
         // 4. Verify user is deleted

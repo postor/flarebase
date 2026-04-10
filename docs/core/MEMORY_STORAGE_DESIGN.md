@@ -111,8 +111,8 @@ export FLARE_STORAGE_BACKEND=memory
 export FLARE_MEMORY_SNAPSHOT_PATH="./data/flare_memory.json"
 export FLARE_MEMORY_SNAPSHOT_INTERVAL=60  # seconds
 
-# Default: Use SledDB
-export FLARE_STORAGE_BACKEND=sled
+# Default: Use redb
+export FLARE_STORAGE_BACKEND=redb
 export FLARE_DB_PATH="./flare.db"
 ```
 
@@ -174,10 +174,9 @@ async fn main() -> anyhow::Result<()> {
 - **Acceptable data loss window** (RPO = snapshot interval)
 - **High write throughput** needed (event sourcing, telemetry)
 
-### Use SledDB when:
-
+### Use RedbStorage when:
 - **Dataset exceeds memory**
-- **Durability is critical** (RPO = 0, RTO < 1s)
+- **Durability is critical** (ACID compliance)
 - **Long-term storage** required
 - **Regulatory compliance** demands immediate persistence
 
@@ -213,11 +212,11 @@ println!("Total indexes: {}", stats.total_indexes);
 
 ## Migration
 
-### From SledDB to MemoryStorage
+### From RedbStorage to MemoryStorage
 
 ```bash
-# 1. Export data from SledDB
-curl http://localhost:3000/_export > sled_data.json
+# 1. Export data from redb
+curl http://localhost:3000/_export > redb_data.json
 
 # 2. Restart with memory backend
 export FLARE_STORAGE_BACKEND=memory
@@ -226,17 +225,17 @@ export FLARE_MEMORY_SNAPSHOT_PATH="./memory_data.json"
 # 3. Import data
 curl -X POST http://localhost:3000/_import \
   -H "Content-Type: application/json" \
-  -d @sled_data.json
+  -d @redb_data.json
 ```
 
-### From MemoryStorage to SledDB
+### From MemoryStorage to RedbStorage
 
 ```bash
 # 1. Force snapshot
 curl -X POST http://localhost:3000/_snapshot
 
-# 2. Restart with sled backend
-export FLARE_STORAGE_BACKEND=sled
+# 2. Restart with redb backend
+export FLARE_STORAGE_BACKEND=redb
 export FLARE_DB_PATH="./flare.db"
 
 # 3. Import from snapshot

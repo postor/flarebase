@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flarebase JWT Authentication - Browser Example</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 40px;
+            max-width: 500px;
+            width: 100%;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 24px;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #555;
+            font-weight: 500;
+            font-size: 14px;
+        }
+
+        input {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        button {
+            width: 100%;
+            padding: 12px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .status {
+            margin-top: 20px;
+            padding: 12px;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+
+        .user-info {
+            margin-top: 20px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 6px;
+            display: none;
+        }
+
+        .user-info.show {
+            display: block;
+        }
+
+        .user-info h3 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+
+        .user-info p {
+            color: #666;
+            margin: 5px 0;
+            font-size: 14px;
+        }
+
+        .toggle-form {
+            text-align: center;
+            margin-top: 20px;
+            color: #667eea;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .toggle-form:hover {
+            text-decoration: underline;
+        }
+
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔐 Flarebase JWT Demo</h1>
+        <p class="subtitle">Browser-based authentication example</p>
+
+        <!-- Login Form -->
+        <form id="loginForm">
+            <div class="form-group">
+                <label for="loginEmail">Email</label>
+                <input type="email" id="loginEmail" placeholder="user@example.com" required>
+            </div>
+            <div class="form-group">
+                <label for="loginPassword">Password</label>
+                <input type="password" id="loginPassword" placeholder="••••••••" required>
+            </div>
+            <button type="submit">Login</button>
+            <div class="toggle-form" onclick="toggleForm()">Don't have an account? Register</div>
+        </form>
+
+        <!-- Register Form -->
+        <form id="registerForm" class="hidden">
+            <div class="form-group">
+                <label for="registerName">Name</label>
+                <input type="text" id="registerName" placeholder="John Doe" required>
+            </div>
+            <div class="form-group">
+                <label for="registerEmail">Email</label>
+                <input type="email" id="registerEmail" placeholder="user@example.com" required>
+            </div>
+            <div class="form-group">
+                <label for="registerPassword">Password</label>
+                <input type="password" id="registerPassword" placeholder="••••••••" required>
+            </div>
+            <button type="submit">Register</button>
+            <div class="toggle-form" onclick="toggleForm()">Already have an account? Login</div>
+        </form>
+
+        <!-- Status Messages -->
+        <div id="status" class="status" style="display: none;"></div>
+
+        <!-- User Info -->
+        <div id="userInfo" class="user-info">
+            <h3>✅ Authenticated</h3>
+            <p><strong>Name:</strong> <span id="userName">-</span></p>
+            <p><strong>Email:</strong> <span id="userEmail">-</span></p>
+            <p><strong>Role:</strong> <span id="userRole">-</span></p>
+            <p style="margin-top: 15px;">
+                <button onclick="logout()">Logout</button>
+            </p>
+        </div>
+    </div>
+
+    <script type="module">
+        import { FlareClient } from './flare-client.js';
+
+        // Initialize Flarebase client
+        const client = new FlareClient('http://localhost:3000');
+
+        // DOM elements
+        const loginForm = document.getElementById('loginForm');
+        const registerForm = document.getElementById('registerForm');
+        const statusDiv = document.getElementById('status');
+        const userInfoDiv = document.getElementById('userInfo');
+
+        // Show status message
+        function showStatus(message, type = 'info') {
+            statusDiv.textContent = message;
+            statusDiv.className = `status ${type}`;
+            statusDiv.style.display = 'block';
+
+            setTimeout(() => {
+                statusDiv.style.display = 'none';
+            }, 5000);
+        }
+
+        // Update user info display
+        function updateUserInfo() {
+            const user = client.getCurrentUser();
+            if (user) {
+                document.getElementById('userName').textContent = user.name || 'N/A';
+                document.getElementById('userEmail').textContent = user.email || 'N/A';
+                document.getElementById('userRole').textContent = user.role || 'user';
+                userInfoDiv.classList.add('show');
+                loginForm.classList.add('hidden');
+                registerForm.classList.add('hidden');
+            } else {
+                userInfoDiv.classList.remove('show');
+                loginForm.classList.remove('hidden');
+            }
+        }
+
+        // Toggle between login and register forms
+        window.toggleForm = function() {
+            loginForm.classList.toggle('hidden');
+            registerForm.classList.toggle('hidden');
+        };
+
+        // Login handler
+        loginForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const email = document.getElementById('loginEmail').value;
+            const password = document.getElementById('loginPassword').value;
+
+            try {
+                showStatus('Logging in...', 'info');
+
+                const result = await client.login({ email, password });
+
+                showStatus(`✅ Login successful! Welcome, ${result.user.name || result.user.email}`, 'success');
+                updateUserInfo();
+
+                // Clear form
+                loginForm.reset();
+            } catch (error) {
+                showStatus(`❌ Login failed: ${error.message}`, 'error');
+            }
+        });
+
+        // Register handler
+        registerForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const name = document.getElementById('registerName').value;
+            const email = document.getElementById('registerEmail').value;
+            const password = document.getElementById('registerPassword').value;
+
+            try {
+                showStatus('Creating account...', 'info');
+
+                const result = await client.register({ name, email, password });
+
+                showStatus(`✅ Registration successful! Welcome, ${result.user.name}`, 'success');
+                updateUserInfo();
+
+                // Clear form
+                registerForm.reset();
+            } catch (error) {
+                showStatus(`❌ Registration failed: ${error.message}`, 'error');
+            }
+        });
+
+        // Logout handler
+        window.logout = function() {
+            client.logout();
+            showStatus('Logged out successfully', 'info');
+            updateUserInfo();
+        };
+
+        // Check if user is already authenticated
+        if (client.isAuthenticated()) {
+            updateUserInfo();
+            showStatus('✅ Already authenticated', 'success');
+        }
+
+        // Make client available for debugging
+        window.flarebase = client;
+    </script>
+</body>
+</html>

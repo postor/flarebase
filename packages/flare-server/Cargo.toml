@@ -30,6 +30,8 @@ chrono = { workspace = true }
 rand = "0.10.0"
 dashmap = "6.1.0"
 uuid = { workspace = true, features = ["v4", "serde"] }
+jsonwebtoken = "9.3"
+bcrypt = "0.16"
 
 [dev-dependencies]
 tempfile = { workspace = true }

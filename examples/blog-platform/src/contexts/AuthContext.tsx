@@ -1,104 +1,110 @@
 'use client';
 
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-
-interface User {
-  id: string;
-  data: {
-    email: string;
-    name: string;
-    avatar?: string;
-    bio?: string;
-    role: 'admin' | 'author' | 'reader';
-    status: 'active' | 'inactive';
-    created_at: number;
-    updated_at?: number;
-  };
-}
+import { getFlarebaseClient } from '@/lib/flarebase';
+import type { User } from '@/types';
 
 interface AuthContextType {
   user: User | null;
-  loading: boolean;
+  isLoading: boolean;
+  isAuthenticated: boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (name: string, email: string, password: string) => Promise<void>;
-  logout: () => Promise<void>;
-  refreshUser: () => Promise<void>;
+  logout: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(true);
 
-  // Fetch current user on mount
   useEffect(() => {
-    const fetchCurrentUser = async () => {
-      try {
-        const response = await fetch('/api/auth/me');
-        const data = await response.json();
+    // Check for existing session on mount
+    const flarebase = getFlarebaseClient();
 
-        if (data.user) {
-          setUser(data.user);
+    // Try to load user from localStorage first (for faster initial render)
+    if (typeof window !== 'undefined') {
+      const storedUser = localStorage.getItem('user');
+      if (storedUser) {
+        try {
+          setUser(JSON.parse(storedUser));
+        } catch (e) {
+          console.warn('Failed to parse stored user:', e);
         }
-      } catch (error) {
-        console.error('Error fetching current user:', error);
-      } finally {
-        setLoading(false);
       }
-    };
+    }
 
-    fetchCurrentUser();
+    setIsLoading(false);
   }, []);
 
   const login = async (email: string, password: string) => {
-    const response = await fetch('/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password })
-    });
+    const flarebase = getFlarebaseClient();
+    const response = await flarebase.login(email, password);
 
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || 'Login failed');
+    if (response.user) {
+      const user: User = {
+        id: response.user.id,
+        data: {
+          email: response.user.email || email,
+          name: response.user.name || '',
+          role: (response.user.role as any) || 'author',
+          status: 'active',
+          created_at: Date.now()
+        }
+      };
+      setUser(user);
+
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('user', JSON.stringify(user));
+      }
     }
-
-    const data = await response.json();
-    setUser(data.user);
   };
 
   const register = async (name: string, email: string, password: string) => {
-    const response = await fetch('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, email, password })
-    });
+    const flarebase = getFlarebaseClient();
+    const response = await flarebase.register({ name, email, password });
 
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || 'Registration failed');
+    if (response.user) {
+      const user: User = {
+        id: response.user.id,
+        data: {
+          email: response.user.email || email,
+          name: response.user.name || name,
+          role: (response.user.role as any) || 'author',
+          status: 'active',
+          created_at: Date.now()
+        }
+      };
+      setUser(user);
+
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('user', JSON.stringify(user));
+      }
     }
-
-    const data = await response.json();
-    setUser(data.user);
   };
 
-  const logout = async () => {
-    await fetch('/api/auth/me', { method: 'DELETE' });
+  const logout = () => {
+    const flarebase = getFlarebaseClient();
+    flarebase.logout();
     setUser(null);
+
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('user');
+      localStorage.removeItem('auth_token');
+    }
   };
 
-  const refreshUser = async () => {
-    const response = await fetch('/api/auth/me');
-    const data = await response.json();
-    setUser(data.user || null);
+  const value: AuthContextType = {
+    user,
+    isLoading,
+    isAuthenticated: !!user,
+    login,
+    register,
+    logout
   };
 
-  return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout, refreshUser }}>
-      {children}
-    </AuthContext.Provider>
-  );
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {

@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flarebase SDK - Browser Environment Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .test-section {
+            background: white;
+            padding: 20px;
+            margin: 10px 0;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .test-result {
+            padding: 10px;
+            margin: 5px 0;
+            border-radius: 4px;
+        }
+        .test-result.pass {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .test-result.fail {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .test-result.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        button {
+            padding: 10px 20px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        #log {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .summary {
+            display: flex;
+            gap: 20px;
+            padding: 15px;
+            background: #e7f3ff;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .summary-item {
+            flex: 1;
+        }
+        .summary-item strong {
+            display: block;
+            font-size: 24px;
+            margin-bottom: 5px;
+        }
+        .pass { color: #28a745; }
+        .fail { color: #dc3545; }
+        .total { color: #007bff; }
+    </style>
+</head>
+<body>
+    <h1>🧪 Flarebase SDK - Browser Environment Tests</h1>
+    <p>Testing JWT transparency and SDK functionality in real browser environment</p>
+
+    <div class="summary">
+        <div class="summary-item">
+            <strong class="total" id="total-tests">0</strong>
+            Total Tests
+        </div>
+        <div class="summary-item">
+            <strong class="pass" id="passed-tests">0</strong>
+            Passed
+        </div>
+        <div class="summary-item">
+            <strong class="fail" id="failed-tests">0</strong>
+            Failed
+        </div>
+        <div class="summary-item">
+            <button onclick="runAllTests()">▶ Run All Tests</button>
+            <button onclick="clearResults()">Clear Results</button>
+        </div>
+    </div>
+
+    <div id="results"></div>
+
+    <div class="test-section">
+        <h3>📋 Test Log</h3>
+        <div id="log"></div>
+    </div>
+
+    <script type="module">
+        // Mock Socket.IO client for browser testing
+        class MockSocket {
+            constructor() {
+                this.id = 'browser-test-socket-id';
+                this.connected = false;
+                this.handlers = {};
+            }
+
+            emit(event, data) {
+                log(`Socket emit: ${event}`);
+                // Simulate server response for auth
+                if (event === 'call_hook' && data[0] === 'auth') {
+                    setTimeout(() => {
+                        if (this.handlers['hook_success']) {
+                            const response = {
+                                token: this.generateMockJWT(),
+                                user: {
+                                    id: 'browser-user-123',
+                                    email: data[1].email,
+                                    role: 'user'
+                                }
+                            };
+                            this.handlers['hook_success'].forEach(cb => cb(response));
+                        }
+                    }, 100);
+                }
+                return this;
+            }
+
+            once(event, callback) {
+                log(`Socket once: ${event}`);
+                if (!this.handlers[event]) {
+                    this.handlers[event] = [];
+                }
+                this.handlers[event].push(callback);
+                return this;
+            }
+
+            off(event) {
+                log(`Socket off: ${event}`);
+                this.handlers[event] = [];
+                return this;
+            }
+
+            disconnect() {
+                log('Socket disconnect');
+                this.connected = false;
+            }
+
+            generateMockJWT() {
+                const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+                const payload = btoa(JSON.stringify({
+                    sub: 'browser-user-123',
+                    email: 'browser@example.com',
+                    role: 'user',
+                    iat: Math.floor(Date.now() / 1000),
+                    exp: Math.floor(Date.now() / 1000) + 3600
+                }));
+                return `${header}.payload.signature`;
+            }
+        }
+
+        // Mock socket.io-client
+        window.io = vi.fn(() => new MockSocket());
+
+        // Import FlareClient
+        import { FlareClient } from './src/index.js';
+
+        // Test state
+        let totalTests = 0;
+        let passedTests = 0;
+        let failedTests = 0;
+
+        // Utility functions
+        function log(message) {
+            const logDiv = document.getElementById('log');
+            const time = new Date().toLocaleTimeString();
+            logDiv.innerHTML += `[${time}] ${message}<br>`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        function assert(condition, testName, errorMessage) {
+            totalTests++;
+            updateSummary();
+
+            const resultDiv = document.createElement('div');
+            resultDiv.className = 'test-result';
+
+            if (condition) {
+                passedTests++;
+                resultDiv.classList.add('pass');
+                resultDiv.innerHTML = `✅ <strong>${testName}</strong>`;
+            } else {
+                failedTests++;
+                resultDiv.classList.add('fail');
+                resultDiv.innerHTML = `❌ <strong>${testName}</strong><br>${errorMessage}`;
+            }
+
+            document.getElementById('results').appendChild(resultDiv);
+            updateSummary();
+        }
+
+        function updateSummary() {
+            document.getElementById('total-tests').textContent = totalTests;
+            document.getElementById('passed-tests').textContent = passedTests;
+            document.getElementById('failed-tests').textContent = failedTests;
+        }
+
+        function clearResults() {
+            document.getElementById('results').innerHTML = '';
+            document.getElementById('log').innerHTML = '';
+            totalTests = 0;
+            passedTests = 0;
+            failedTests = 0;
+            updateSummary();
+        }
+
+        // Test suite
+        window.runAllTests = async function() {
+            clearResults();
+            log('Starting browser environment tests...');
+
+            // Test 1: Browser API availability
+            log('Test 1: Checking browser APIs...');
+            assert(
+                typeof localStorage !== 'undefined',
+                'localStorage is available',
+                'localStorage is not defined in this browser'
+            );
+            assert(
+                typeof btoa !== 'undefined',
+                'btoa is available',
+                'btoa is not defined in this browser'
+            );
+            assert(
+                typeof atob !== 'undefined',
+                'atob is available',
+                'atob is not defined in this browser'
+            );
+
+            // Test 2: Client initialization
+            log('Test 2: Testing client initialization...');
+            const client = new FlareClient('http://localhost:3000');
+            assert(
+                client !== null,
+                'FlareClient can be instantiated',
+                'Failed to create FlareClient instance'
+            );
+            assert(
+                typeof client.login === 'function',
+                'login method exists',
+                'login method not found'
+            );
+            assert(
+                typeof client.auth === 'object',
+                'auth object exists',
+                'auth object not found'
+            );
+
+            // Test 3: JWT encoding/decoding
+            log('Test 3: Testing JWT encoding/decoding...');
+            try {
+                const header = { alg: 'HS256', typ: 'JWT' };
+                const payload = { sub: 'test', email: 'test@example.com', role: 'user' };
+
+                const encodedHeader = btoa(JSON.stringify(header));
+                const encodedPayload = btoa(JSON.stringify(payload));
+
+                assert(
+                    encodedHeader !== null,
+                    'JWT encoding works',
+                    'Failed to encode JWT header'
+                );
+
+                const decodedHeader = JSON.parse(atob(encodedHeader));
+                assert(
+                    decodedHeader.alg === 'HS256',
+                    'JWT decoding works',
+                    'Failed to decode JWT header'
+                );
+            } catch (e) {
+                assert(false, 'JWT encoding/decoding works', `Error: ${e.message}`);
+            }
+
+            // Test 4: Login and JWT persistence
+            log('Test 4: Testing login and JWT persistence...');
+            try {
+                await client.login({ email: 'browser@example.com', password: 'password123' });
+
+                assert(
+                    client.auth.isAuthenticated,
+                    'User is authenticated after login',
+                    'User is not authenticated after login'
+                );
+
+                const storedToken = localStorage.getItem('flarebase_jwt');
+                assert(
+                    storedToken !== null,
+                    'JWT is stored in localStorage',
+                    'JWT not found in localStorage after login'
+                );
+
+                const storedUser = localStorage.getItem('flarebase_user');
+                assert(
+                    storedUser !== null,
+                    'User data is stored in localStorage',
+                    'User data not found in localStorage after login'
+                );
+            } catch (e) {
+                assert(false, 'Login process works', `Error: ${e.message}`);
+            }
+
+            // Test 5: JWT restoration
+            log('Test 5: Testing JWT restoration...');
+            try {
+                const client2 = new FlareClient('http://localhost:3000');
+
+                assert(
+                    client2.auth.isAuthenticated,
+                    'JWT is restored from localStorage',
+                    'JWT was not restored from localStorage'
+                );
+
+                assert(
+                    client2.auth.user !== null,
+                    'User data is restored from localStorage',
+                    'User data was not restored from localStorage'
+                );
+            } catch (e) {
+                assert(false, 'JWT restoration works', `Error: ${e.message}`);
+            }
+
+            // Test 6: Logout
+            log('Test 6: Testing logout...');
+            try {
+                client.logout();
+
+                assert(
+                    !client.auth.isAuthenticated,
+                    'User is not authenticated after logout',
+                    'User is still authenticated after logout'
+                );
+
+                const tokenAfterLogout = localStorage.getItem('flarebase_jwt');
+                assert(
+                    tokenAfterLogout === null,
+                    'JWT is cleared from localStorage',
+                    'JWT still in localStorage after logout'
+                );
+            } catch (e) {
+                assert(false, 'Logout works correctly', `Error: ${e.message}`);
+            }
+
+            // Test 7: Auth state consistency
+            log('Test 7: Testing auth state consistency...');
+            try {
+                const client3 = new FlareClient('http://localhost:3000');
+
+                assert(
+                    typeof client3.auth.isAuthenticated === 'boolean',
+                    'auth.isAuthenticated is a boolean',
+                    'auth.isAuthenticated is not a boolean'
+                );
+
+                assert(
+                    client3.auth.user === null || typeof client3.auth.user === 'object',
+                    'auth.user is either null or an object',
+                    'auth.user has unexpected type'
+                );
+            } catch (e) {
+                assert(false, 'Auth state API is consistent', `Error: ${e.message}`);
+            }
+
+            // Test 8: JWT transparency
+            log('Test 8: Testing JWT transparency...');
+            try {
+                const client4 = new FlareClient('http://localhost:3000');
+
+                // Users should not need to call internal methods
+                assert(
+                    typeof client4._setJWT === 'function',
+                    '_setJWT exists (but should be private)',
+                    '_setJWT method not found'
+                );
+
+                // Users should use public API
+                await client4.login({ email: 'transparency@example.com', password: 'password' });
+
+                assert(
+                    client4.auth.isAuthenticated === true,
+                    'Can check auth without touching JWT',
+                    'Auth check failed'
+                );
+
+                const user = client4.auth.user;
+                assert(
+                    user && user.email === 'transparency@example.com',
+                    'Can access user without touching JWT',
+                    'User access failed'
+                );
+
+                client4.logout();
+                assert(
+                    !client4.auth.isAuthenticated,
+                    'Can logout without manually clearing JWT',
+                    'Logout failed'
+                );
+
+            } catch (e) {
+                assert(false, 'JWT is completely transparent', `Error: ${e.message}`);
+            }
+
+            log(`Test completed! ${passedTests}/${totalTests} passed`);
+        };
+
+        // Initialize
+        log('Browser test environment loaded');
+        log('Flarebase SDK version: ' + (window.FlareClient ? 'loaded' : 'not loaded'));
+    </script>
+</body>
+</html>

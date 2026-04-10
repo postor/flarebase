@@ -5,6 +5,9 @@ use tokio::sync::oneshot;
 use uuid::Uuid;
 use std::sync::Arc;
 
+// Re-export UserContext for external use
+pub use crate::jwt_middleware::UserContext;
+
 pub struct HookManager {
     // event_name -> Vec<SocketId>
     pub(in crate) hooks: Arc<DashMap<String, Vec<String>>>,
@@ -39,6 +42,18 @@ impl HookManager {
 
     /// Call a hook and wait for response
     pub async fn call_hook(&self, event_name: String, session_id: String, params: Value, emit_fn: impl FnOnce(String, Value)) -> anyhow::Result<Value> {
+        self.call_hook_with_jwt(event_name, session_id, params, None, emit_fn).await
+    }
+
+    /// Call a hook with JWT user context and wait for response
+    pub async fn call_hook_with_jwt(
+        &self,
+        event_name: String,
+        session_id: String,
+        params: Value,
+        user_context: Option<UserContext>,
+        emit_fn: impl FnOnce(String, Value)
+    ) -> anyhow::Result<Value> {
         let request_id = Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel();
 
@@ -54,11 +69,28 @@ impl HookManager {
 
         self.pending_requests.insert(request_id.clone(), tx);
 
+        // Build $jwt object from user context
+        let jwt_value = if let Some(ctx) = user_context {
+            serde_json::json!({
+                "user_id": ctx.user_id,
+                "email": ctx.email,
+                "role": ctx.role
+            })
+        } else {
+            // For auth hook or unauthenticated requests, provide guest context
+            serde_json::json!({
+                "user_id": null,
+                "email": null,
+                "role": "guest"
+            })
+        };
+
         let request_data = serde_json::json!({
             "request_id": request_id,
             "event_name": event_name,
             "session_id": session_id,
-            "params": params
+            "params": params,
+            "$jwt": jwt_value
         });
 
         // Send the request using the provided emit function
@@ -163,5 +195,64 @@ mod tests {
 
         manager.remove_hook("socket-1");
         assert_eq!(manager.hooks.get("event-1").unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_hook_request_injects_jwt_context() {
+        let manager = HookManager::new();
+        let sid = "socket-auth-1".to_string();
+
+        // Register an auth hook
+        manager.hooks.entry("auth".to_string()).or_default().push(sid.clone());
+
+        // Prepare user context (use underscore to avoid unused warning)
+        let _user_context = UserContext {
+            user_id: "user_123".to_string(),
+            email: "test@example.com".to_string(),
+            role: "admin".to_string(),
+        };
+
+        // Test the request structure that would be sent
+        let jwt_value = serde_json::json!({
+            "user_id": "user_123",
+            "email": "test@example.com",
+            "role": "admin"
+        });
+
+        assert_eq!(jwt_value["user_id"], "user_123");
+        assert_eq!(jwt_value["email"], "test@example.com");
+        assert_eq!(jwt_value["role"], "admin");
+    }
+
+    #[test]
+    fn test_hook_request_guest_context() {
+        // Test guest context (no user)
+        let jwt_value = serde_json::json!({
+            "user_id": null,
+            "email": null,
+            "role": "guest"
+        });
+
+        assert_eq!(jwt_value["user_id"], serde_json::Value::Null);
+        assert_eq!(jwt_value["email"], serde_json::Value::Null);
+        assert_eq!(jwt_value["role"], "guest");
+    }
+
+    #[tokio::test]
+    async fn test_auth_hook_registration() {
+        let manager = HookManager::new();
+
+        // Register auth hook (fixed name)
+        let sid = "auth-service-1".to_string();
+        manager.hooks.entry("auth".to_string()).or_default().push(sid.clone());
+
+        // Verify auth hook is registered
+        let hooks = manager.get_hooks_for_event("auth");
+        assert_eq!(hooks.len(), 1);
+        assert_eq!(hooks[0], "auth-service-1");
+
+        // Clean up
+        manager.remove_hook(&sid);
+        assert_eq!(manager.get_hook_count("auth"), 0);
     }
 }

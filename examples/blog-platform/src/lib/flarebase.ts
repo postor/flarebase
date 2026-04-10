@@ -1,169 +1,201 @@
-// Flarebase客户端配置和初始化
-import { io } from 'socket.io-client';
+/**
+ * Flarebase Client Integration
+ *
+ * Updated to use new TypeScript SDK (v0.2.0)
+ */
 
-// 🔒 直接连接到Flarebase服务器，权限检查在Flarebase层面进行
-const FLAREBASE_URL = process.env.NEXT_PUBLIC_FLAREBASE_URL || 'http://localhost:3000';
-const EXPRESS_SERVER_URL = process.env.NEXT_PUBLIC_EXPRESS_SERVER_URL || 'http://localhost:3001';
+import { FlareClient as SDKFlareClient } from '@flarebase/client';
+import type { User, LoginCredentials, RegistrationData, AuthResponse } from '@flarebase/client';
 
-class FlarebaseClient {
-  baseURL: string;
-  expressServerURL: string;
-  socket: any;
+const FLAREBASE_URL = process.env.FLAREBASE_URL || 'http://localhost:3001';
 
-  constructor(baseURL: string, expressServerURL: string) {
-    this.baseURL = baseURL;
-    this.expressServerURL = expressServerURL;
-    this.socket = null;
+/**
+ * Flarebase Client wrapper for blog platform
+ */
+export class FlarebaseClient {
+  private client: SDKFlareClient;
+
+  constructor(baseURL: string = FLAREBASE_URL) {
+    this.client = new SDKFlareClient(baseURL);
   }
 
-  // Socket.IO连接（连接到Express服务器接收Hook事件）
-  connectSocket() {
-    if (typeof window !== 'undefined' && !this.socket) {
-      // 连接到Express服务器的Socket.IO来接收Hook事件
-      this.socket = io(this.expressServerURL);
-
-      // 监听来自Flarebase的实时更新
-      this.socket.on('flarebase:doc_created', (doc) => {
-        console.log('Document created (via Express):', doc);
-      });
-
-      this.socket.on('flarebase:doc_updated', (doc) => {
-        console.log('Document updated (via Express):', doc);
-      });
-
-      this.socket.on('flarebase:doc_deleted', (payload) => {
-        console.log('Document deleted (via Express):', payload);
-      });
-
-      // 订阅集合更新
-      this.subscribe = (collection: string) => {
-        this.socket.emit('subscribe', collection);
-      };
-
-      this.unsubscribe = (collection: string) => {
-        this.socket.emit('unsubscribe', collection);
-      };
-    }
+  /**
+   * Get authentication state
+   */
+  get auth() {
+    return this.client.auth;
   }
 
-  // 获取认证头（发送到Flarebase进行权限检查）
-  private getAuthHeaders() {
-    const token = typeof window !== 'undefined' ? localStorage.getItem('auth_token') : null;
-    return token ? { 'Authorization': `Bearer ${token}` } : {};
+  /**
+   * Login with email and password
+   */
+  async login(email: string, password: string): Promise<AuthResponse> {
+    return await this.client.login({ email, password });
   }
 
-  // 🔒 直接连接Flarebase进行集合操作（权限检查在Flarebase服务器层面）
+  /**
+   * Register new user
+   */
+  async register(userData: { name: string; email: string; password: string }): Promise<AuthResponse> {
+    return await this.client.register(userData);
+  }
+
+  /**
+   * Logout current user
+   */
+  logout(): void {
+    this.client.logout();
+  }
+
+  /**
+   * Get current user
+   */
+  getCurrentUser(): User | null {
+    return this.client.user;
+  }
+
+  /**
+   * Check if authenticated
+   */
+  isAuthenticated(): boolean {
+    return this.client.auth.isAuthenticated;
+  }
+
+  /**
+   * Get collection reference
+   */
   collection(name: string) {
+    return this.client.collection(name);
+  }
+
+  /**
+   * Get all articles
+   */
+  async getArticles() {
+    return await this.client.collection('posts').get();
+  }
+
+  /**
+   * Get article by ID
+   */
+  async getArticle(id: string) {
+    return await this.client.collection('posts').doc(id).get();
+  }
+
+  /**
+   * Create new article
+   */
+  async createArticle(articleData: { title: string; content: string; status?: string }) {
+    return await this.client.collection('posts').add({
+      ...articleData,
+      status: articleData.status || 'draft',
+      created_at: Date.now(),
+      updated_at: Date.now()
+    });
+  }
+
+  /**
+   * Update article
+   */
+  async updateArticle(id: string, updates: any) {
+    return await this.client.collection('posts').doc(id).update({
+      ...updates,
+      updated_at: Date.now()
+    });
+  }
+
+  /**
+   * Delete article
+   */
+  async deleteArticle(id: string) {
+    return await this.client.collection('posts').doc(id).delete();
+  }
+
+  /**
+   * Get user's articles
+   */
+  async getMyArticles() {
+    const client = this.client;
+    if (!client.auth.user?.id) {
+      return [];
+    }
+
+    // Query articles by author_id
+    return await this.client
+      .collection('posts')
+      .where('author_id', '==', client.auth.user.id)
+      .get();
+  }
+
+  /**
+   * Execute named query
+   */
+  async namedQuery<T = any>(queryName: string, params: Record<string, any> = {}): Promise<T> {
+    return await this.client.namedQuery<T>(queryName, params);
+  }
+
+  /**
+   * Named query with REST (for compatibility)
+   */
+  async namedQueryREST<T = any>(queryName: string, params: Record<string, any> = {}): Promise<T> {
+    return await this.namedQuery<T>(queryName, params);
+  }
+
+  /**
+   * Blog-specific named queries for convenience
+   */
+  get blogQueries() {
     return {
-      name,
-
-      // 获取所有文档
-      async getAll<T>(): Promise<T[]> {
-        const response = await fetch(`${this.baseURL}/collections/${name}`, {
-          headers: this.getAuthHeaders()
-        });
-        return response.json();
+      /**
+       * Check if email already exists
+       */
+      checkEmailExists: async (email: string) => {
+        return await this.namedQuery<any[]>('check_email_exists', { email });
       },
 
-      // 获取单个文档
-      async get<T>(id: string): Promise<T | null> {
-        const response = await fetch(`${this.baseURL}/collections/${name}/${id}`, {
-          headers: this.getAuthHeaders()
-        });
-        const data = await response.json();
-        return data;
+      /**
+       * Get user by email
+       */
+      getUserByEmail: async (email: string) => {
+        return await this.namedQuery<any[]>('get_user_by_email', { email });
       },
 
-      // 添加文档
-      async add<T>(data: any): Promise<T> {
-        const response = await fetch(`${this.baseURL}/collections/${name}`, {
-          method: 'POST',
-          headers: {
-            ...this.getAuthHeaders(),
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(data)
-        });
-        return response.json();
+      /**
+       * Get published posts with pagination
+       */
+      getPublishedPosts: async (limit: number = 20, offset: number = 0) => {
+        return await this.namedQuery<any[]>('get_published_posts', { limit, offset });
       },
 
-      // 更新文档
-      async update(id: string, data: any): Promise<any> {
-        const response = await fetch(`${this.baseURL}/collections/${name}/${id}`, {
-          method: 'PUT',
-          headers: {
-            ...this.getAuthHeaders(),
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(data)
-        });
-        return response.json();
+      /**
+       * Get post by slug
+       */
+      getPostBySlug: async (slug: string) => {
+        const result = await this.namedQuery<any[]>('get_post_by_slug', { slug });
+        return result && result.length > 0 ? result[0] : null;
       },
 
-      // 删除文档
-      async delete(id: string): Promise<boolean> {
-        const response = await fetch(`${this.baseURL}/collections/${name}/${id}`, {
-          method: 'DELETE',
-          headers: this.getAuthHeaders()
-        });
-        return response.ok;
-      },
-
-      // 查询
-      async query<T>(filters: any[] = []): Promise<T[]> {
-        const response = await fetch(`${this.baseURL}/query`, {
-          method: 'POST',
-          headers: {
-            ...this.getAuthHeaders(),
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ collection: name, filters })
-        });
-        return response.json();
+      /**
+       * Get posts by author
+       */
+      getPostsByAuthor: async (authorId: string, limit: number = 20, offset: number = 0) => {
+        return await this.namedQuery<any[]>('get_posts_by_author', { author_id: authorId, limit, offset });
       }
     };
   }
-
-  // 文档引用
-  doc(collection: string, id: string) {
-    return {
-      async get<T>(): Promise<T | null> {
-        return this.collection(collection).get<T>(id);
-      },
-
-      async update(data: any): Promise<any> {
-        return this.collection(collection).update(id, data);
-      },
-
-      async delete(): Promise<boolean> {
-        return this.collection(collection).delete(id);
-      }
-    };
-  }
-
-  // 查询操作
-  query(collection: string, filters: any[] = []) {
-    return {
-      get: () => this.collection(collection).query(filters)
-    };
-  }
-
-  // 订阅集合更新
-  subscribe: (collection: string) => void = () => {};
-  unsubscribe: (collection: string) => void = () => {};
 }
 
-// 单例实例
-let flarebaseClient: FlarebaseClient | null = null;
+// Singleton instance
+let clientInstance: FlarebaseClient | null = null;
 
+/**
+ * Get Flarebase client instance
+ */
 export function getFlarebaseClient(): FlarebaseClient {
-  if (!flarebaseClient) {
-    flarebaseClient = new FlarebaseClient(FLAREBASE_URL, EXPRESS_SERVER_URL);
+  if (!clientInstance) {
+    clientInstance = new FlarebaseClient();
   }
-  return flarebaseClient;
+  return clientInstance;
 }
 
-// 客户端Hook（用于SSR）
-export function useFlarebaseClient() {
-  return getFlarebaseClient();
-}
+export default FlarebaseClient;

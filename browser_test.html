@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Socket.IO 测试</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+</head>
+<body>
+    <h1>🔍 Flarebase Socket.IO 测试</h1>
+    <div id="output"></div>
+    <script>
+        const output = document.getElementById('output');
+        
+        function log(msg) {
+            output.innerHTML += '<div>' + msg + '</div>';
+            console.log(msg);
+        }
+        
+        log('📍 开始测试...');
+        log('Flarebase URL: http://localhost:3003');
+        
+        const socket = io('http://localhost:3003', {
+            transports: ['websocket', 'polling']
+        });
+        
+        socket.on('connect', () => {
+            log('✅ Socket.IO 已连接');
+            
+            // 测试白名单查询
+            log('🔍 发送白名单查询...');
+            socket.emit('named_query', ['list_published_posts', { limit: 10 }]);
+        });
+        
+        socket.on('query_success', (result) => {
+            log('✅ 白名单查询成功!');
+            log('📊 结果: ' + JSON.stringify(result, null, 2));
+        });
+        
+        socket.on('query_error', (error) => {
+            log('❌ 查询失败: ' + JSON.stringify(error, null, 2));
+        });
+        
+        socket.on('connect_error', (error) => {
+            log('❌ 连接错误: ' + error.message);
+        });
+        
+        socket.on('error', (error) => {
+            log('❌ Socket.IO 错误: ' + error);
+        });
+        
+        // 超时检查
+        setTimeout(() => {
+            log('⏱️ 10秒后检查连接状态...');
+            if (socket.connected) {
+                log('✅ 连接仍然活跃');
+            } else {
+                log('❌ 连接已断开');
+            }
+        }, 10000);
+    </script>
+</body>
+</html>

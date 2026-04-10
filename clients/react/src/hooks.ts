@@ -3,6 +3,7 @@
  *
  * React hooks for Flarebase
  */
+'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useFlarebase } from './provider.js';

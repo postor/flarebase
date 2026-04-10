@@ -1,6 +1,7 @@
 /**
  * Flarebase React Provider (TypeScript)
  */
+'use client';
 
 import React, { createContext, useContext, useState } from 'react';
 import { FlareClient } from '@flarebase/client';

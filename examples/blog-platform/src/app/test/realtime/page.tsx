@@ -15,7 +15,8 @@ export default function RealtimeTestPage() {
   const fetchPosts = async () => {
     try {
       const flarebase = getFlarebaseClient();
-      const allPosts = await flarebase.query<Post>([]);
+      // ✅ 使用安全的白名单查询获取所有文章（仅用于测试页面）
+      const allPosts = await flarebase.blogQueries.getPublishedPosts(100, 0);
       setPosts(allPosts);
     } catch (error) {
       console.error('Error fetching posts:', error);

@@ -28,8 +28,8 @@ export default function LoginPage() {
     try {
       const flarebase = getFlarebaseClient();
 
-      // Find user by email
-      const users = await flarebase.query<any>([['email', { Eq: formData.email }]]);
+      // ✅ Find user by email using secure whitelist query
+      const users: any[] = await flarebase.blogQueries.getUserByEmail(formData.email);
 
       if (users.length === 0) {
         setError('User not found');

@@ -6,14 +6,15 @@ This document explains the data durability guarantees, persistence mechanisms, a
 
 Flarebase supports two primary storage backends with different durability levels:
 
-### 1. SledStorage (Default Persistent)
-- **Engine**: [sled](https://github.com/spacejam/sled) (Transactional Key-Value Store)
-- **Durability**: **Strong**
+### 1. RedbStorage (Default Persistent)
+- **Engine**: [redb](https://github.com/cjtaylor/redb) (Pure Rust, ACID-compliant KV store)
+- **Durability**: **High (ACID)**
 - **Mechanism**:
-    - Every write operation triggers an immediate `flush()` to disk.
-    - Uses an internal Write-Ahead Log (WAL) to ensure ACID properties.
-- **Crash Recovery**: Automatic. On restart, `sled` replays its internal log to restore the database to a consistent state.
-- **Recommended for**: Production environments where zero data loss is required.
+    - Uses a Copy-on-Write (CoW) B-tree architecture.
+    - Supports atomic transactions via a stable, versioned file format.
+    - Does not require a separate WAL because it is crash-safe by design (partially written pages are ignored on restart).
+- **Crash Recovery**: Automatic. On restart, `redb` identifies the last valid commit root and resumes from there.
+- **Recommended for**: Production environments where stability and 100% Rust-native safety are required.
 
 ### 2. MemoryStorage (Performance Optimized)
 - **Engine**: In-memory `HashMap` with `RwLock` concurrency.
@@ -33,10 +34,10 @@ Flarebase supports two primary storage backends with different durability levels
 
 ### What happens during a crash?
 
-1.  **If using SledStorage**:
-    - The OS cache is flushed periodically or on `flush()` calls.
-    - `sled` ensures that committed transactions are durable.
-    - No manual intervention is needed for recovery.
+1. **If using RedbStorage**:
+    - The database uses atomic commits via its B-tree structure and copy-on-write logic.
+    - `redb` ensures that committed transactions are durable and crash-safe.
+    - No manual intervention is needed for recovery; the engine automatically recovers to the last valid commit root.
 
 2.  **If using MemoryStorage**:
     - The process state is lost.

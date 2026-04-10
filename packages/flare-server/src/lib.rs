@@ -6,18 +6,17 @@ pub mod cluster;
 pub mod hooks;
 pub mod hook_manager;
 pub mod permissions;
+pub mod whitelist;
+pub mod jwt_middleware;
 
 // Re-export for integration tests
 pub use cluster::ClusterManager;
 pub use hooks::{EventBus, WebhookDispatcher, WebhooksProvider};
 pub use hook_manager::HookManager;
 pub use permissions::{Authorizer, PermissionContext, ResourceType};
+pub use whitelist::{QueryExecutor, NamedQueriesConfig, UserContext, InjectionContext, QueryResult};
 
-// Re-export types for testing
-pub use axum::{extract::{Path, State}, Json};
-pub use socketioxide::extract::Data;
-
-// AppState for testing
+// AppState for testing and integration
 use std::sync::Arc;
 use flare_db::Storage;
 use socketioxide::SocketIo;
@@ -29,4 +28,5 @@ pub struct AppState {
     pub node_id: u64,
     pub event_bus: Arc<EventBus>,
     pub hook_manager: Arc<HookManager>,
+    pub query_executor: Arc<QueryExecutor>, // 白名单查询执行器
 }

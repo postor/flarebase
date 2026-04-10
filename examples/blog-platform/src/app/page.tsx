@@ -21,9 +21,8 @@ export default function HomePage() {
     const fetchPosts = async () => {
       try {
         const flarebase = getFlarebaseClient();
-        const publishedPosts = await flarebase.query<PostWithAuthor>([
-          ['status', { Eq: 'published' }]
-        ]);
+        // ✅ 使用安全的白名单查询
+        const publishedPosts: any[] = await flarebase.blogQueries.getPublishedPosts(20, 0);
 
         // Sort by published_at date (newest first)
         const sortedPosts = publishedPosts.sort((a, b) => {

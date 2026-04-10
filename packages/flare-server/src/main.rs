@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{StatusCode, Method},
     routing::{get, post, put, delete},
     Json, Router,
 };
@@ -12,7 +12,7 @@ use socketioxide::{
     SocketIo,
 };
 use std::sync::Arc;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{CorsLayer, Any};
 use tonic::transport::Server;
 use tokio::time::Duration;
 use async_trait::async_trait;
@@ -21,12 +21,16 @@ pub mod cluster;
 pub mod hooks;
 pub mod hook_manager;
 pub mod permissions;
+pub mod whitelist; // 新增白名单模块
+pub mod jwt_middleware; // JWT认证中间件
 
 // Re-export for integration tests
 pub use cluster::ClusterManager;
 pub use hooks::{EventBus, WebhookDispatcher, WebhooksProvider};
 pub use hook_manager::HookManager;
 pub use permissions::{Authorizer, PermissionContext, ResourceType};
+pub use whitelist::{QueryExecutor, UserContext};
+pub use jwt_middleware::{JwtManager, UserContext as JwtUserContext};
 use flare_protocol::{HookRegister, HookResponse};
 
 #[async_trait]
@@ -108,6 +112,7 @@ pub struct AppState {
     node_id: u64,
     event_bus: Arc<EventBus>,
     hook_manager: Arc<HookManager>,
+    query_executor: Arc<QueryExecutor>, // 新增白名单查询执行器
 }
 
 #[tokio::main]
@@ -162,6 +167,78 @@ async fn main() -> anyhow::Result<()> {
     let event_bus = Arc::new(event_bus);
     let hook_manager = Arc::new(HookManager::new());
 
+    // 🔒 加载白名单查询配置
+    let query_executor = {
+        let default_config = r#"
+        {
+          "queries": {
+            "list_published_posts": {
+              "type": "simple",
+              "collection": "posts",
+              "filters": [
+                ["status", {"Eq": "published"}]
+              ]
+            },
+            "list_my_posts": {
+              "type": "simple",
+              "collection": "posts",
+              "filters": [
+                ["author_id", {"Eq": "$USER_ID"}]
+              ]
+            },
+            "get_post_with_author": {
+              "type": "pipeline",
+              "steps": [
+                {
+                  "id": "post",
+                  "action": "get",
+                  "collection": "posts",
+                  "id_param": "$params.id"
+                },
+                {
+                  "id": "author",
+                  "action": "get",
+                  "collection": "users",
+                  "id_param": "$post.data.author_id"
+                }
+              ],
+              "output": {
+                "title": "$post.data.title",
+                "content": "$post.data.content",
+                "author_name": "$author.data.name"
+              }
+            }
+          }
+        }
+        "#;
+
+        // 尝试从配置文件加载，如果失败则使用默认配置
+        let config_path = std::env::var("WHITELIST_CONFIG_PATH").unwrap_or("named_queries.json".to_string());
+        let config_json = if std::path::Path::new(&config_path).exists() {
+            tracing::info!("Loading whitelist config from: {}", config_path);
+            std::fs::read_to_string(&config_path).unwrap_or_else(|_| {
+                tracing::warn!("Failed to read whitelist config file, using defaults");
+                default_config.to_string()
+            })
+        } else {
+            tracing::info!("Using default whitelist config");
+            default_config.to_string()
+        };
+
+        match QueryExecutor::from_json(&config_json) {
+            Ok(executor) => {
+                tracing::info!("✅ Whitelist query executor initialized successfully");
+                Arc::new(executor)
+            }
+            Err(err) => {
+                tracing::error!("❌ Failed to initialize whitelist query executor: {:?}", err);
+                tracing::error!("🔄 Falling back to empty whitelist (no queries allowed)");
+                // 使用空配置作为回退
+                Arc::new(QueryExecutor::from_json("{\"queries\": {}}").unwrap())
+            }
+        }
+    };
+
     // --- Start webhook dispatcher before creating state ---
     // Create a simple wrapper that implements WebhooksProvider
     let webhooks_provider = {
@@ -213,6 +290,7 @@ async fn main() -> anyhow::Result<()> {
         node_id,
         event_bus,
         hook_manager,
+        query_executor, // 添加白名单查询执行器
     });
 
     // --- WebSocket Namespaces ---
@@ -221,15 +299,17 @@ async fn main() -> anyhow::Result<()> {
     io.ns("/", move |socket: SocketRef| {
         let st = Arc::clone(&state_ns);
         tracing::info!("socket connected: {}", socket.id);
-        
+
         let _ = socket.join(format!("session:{}", socket.id));
-        
+
         socket.on("subscribe", |socket: SocketRef, Data(collection): Data<String>| {
             let _ = socket.join(collection);
         });
 
+        // 为每个事件处理器单独克隆状态
+        let st_hook = Arc::clone(&st);
         socket.on("call_hook", move |socket: SocketRef, Data((event, params)): Data<(String, serde_json::Value)>| {
-            let stc = Arc::clone(&st);
+            let stc = Arc::clone(&st_hook);
             let session_id = socket.id.to_string();
             let event_name = event.clone();
             tokio::spawn(async move {
@@ -246,6 +326,185 @@ async fn main() -> anyhow::Result<()> {
                     Err(e) => {
                         tracing::error!("Hook call failed for event {}: {}", event_name, e);
                         let _ = socket.emit("hook_error", &e.to_string());
+                    }
+                }
+            });
+        });
+
+        // 🔒 白名单查询支持 - 通过 WebSocket 执行安全的命名查询
+        let st_query = Arc::clone(&st);
+        socket.on("named_query", move |socket: SocketRef, Data((query_name, params)): Data<(String, serde_json::Value)>| {
+            let stc = Arc::clone(&st_query);
+            let socket_id = socket.id.to_string();
+            let query_name_clone = query_name.clone();
+
+            tokio::spawn(async move {
+                use std::collections::HashMap;
+
+                // 从 WebSocket 连接中提取用户信息 (假设在连接时已认证)
+                // 这里使用一个简单的方式：从 socket 数据中获取，或者使用 guest
+                let user_id = "guest".to_string(); // 默认为 guest
+                let user_role = "guest".to_string();
+
+                // TODO: 从 socket 的 auth 数据中提取真实的用户信息
+                // 或者要求客户端在查询参数中提供认证令牌
+
+                let user_context = UserContext {
+                    user_id: user_id.clone(),
+                    user_role: user_role.clone(),
+                };
+
+                // 转换参数格式
+                let client_params: HashMap<String, serde_json::Value> =
+                    serde_json::from_value(params).unwrap_or_else(|_| HashMap::new());
+
+                // 执行白名单查询
+                let start_time = std::time::Instant::now();
+                tracing::info!("🔍 WebSocket Whitelist Query: {} | Socket: {} | User: {}",
+                    query_name, socket_id, user_id);
+
+                match stc.query_executor.execute_query(&query_name, &user_context, &client_params) {
+                    Ok(result) => {
+                        let duration = start_time.elapsed();
+                        tracing::info!("✅ Query executed successfully: {} | Time: {:?}", query_name, duration);
+
+                        // 转换结果为 JSON
+                        if let Ok(json_result) = serde_json::to_value(&result) {
+                            let _ = socket.emit("query_success", &json_result);
+                        } else {
+                            let _ = socket.emit("query_error", &serde_json::json!({
+                                "error": "Failed to serialize query result"
+                            }));
+                        }
+                    }
+                    Err(err) => {
+                        let duration = start_time.elapsed();
+                        tracing::error!("❌ Query execution failed: {} | Error: {:?} | Time: {:?}",
+                            query_name, err, duration);
+
+                        let _ = socket.emit("query_error", &serde_json::json!({
+                            "error": err.to_string(),
+                            "query": query_name_clone
+                        }));
+                    }
+                }
+            });
+        });
+
+        // 📝 集合操作 - 通过 Socket.IO
+        let st_collection = Arc::clone(&st);
+        socket.on("insert", move |socket: SocketRef, Data(data): Data<serde_json::Value>| {
+            let stc = Arc::clone(&st_collection);
+
+            tokio::spawn(async move {
+                let collection = data.get("collection").and_then(|v| v.as_str()).unwrap_or("");
+                let doc_data = data.get("data").cloned().unwrap_or(serde_json::json!({}));
+
+                let doc = Document::new(collection.to_string(), doc_data);
+
+                match stc.storage.insert(doc.clone()).await {
+                    Ok(_) => {
+                        broadcast_op(Arc::clone(&stc), collection.to_string(), "doc_created", serde_json::to_value(&doc).unwrap()).await;
+                        let _ = socket.emit("insert_success", &doc);
+                    }
+                    Err(e) => {
+                        let _ = socket.emit("insert_error", &serde_json::json!({"error": e.to_string()}));
+                    }
+                }
+            });
+        });
+
+        let st_get = Arc::clone(&st);
+        socket.on("get", move |socket: SocketRef, Data(data): Data<serde_json::Value>| {
+            let stc = Arc::clone(&st_get);
+
+            tokio::spawn(async move {
+                let collection = data.get("collection").and_then(|v| v.as_str()).unwrap_or("");
+                let id = data.get("id").and_then(|v| v.as_str()).unwrap_or("");
+
+                match stc.storage.get(collection, id).await {
+                    Ok(Some(doc)) => { let _ = socket.emit("get_success", &doc); }
+                    Ok(None) => { let _ = socket.emit("get_success", serde_json::json!(null)); }
+                    Err(e) => { let _ = socket.emit("get_error", &serde_json::json!({"error": e.to_string()})); }
+                }
+            });
+        });
+
+        let st_list = Arc::clone(&st);
+        socket.on("list", move |socket: SocketRef, Data(data): Data<serde_json::Value>| {
+            let stc = Arc::clone(&st_list);
+
+            tokio::spawn(async move {
+                let collection = data.get("collection").and_then(|v| v.as_str()).unwrap_or("");
+
+                match stc.storage.list(collection).await {
+                    Ok(docs) => { let _ = socket.emit("list_success", &docs); }
+                    Err(e) => { let _ = socket.emit("list_error", &serde_json::json!({"error": e.to_string()})); }
+                }
+            });
+        });
+
+        let st_update = Arc::clone(&st);
+        socket.on("update", move |socket: SocketRef, Data(data): Data<serde_json::Value>| {
+            let stc = Arc::clone(&st_update);
+            let collection_clone = data.get("collection").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+            tokio::spawn(async move {
+                let collection = data.get("collection").and_then(|v| v.as_str()).unwrap_or("");
+                let id = data.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let update_data = data.get("data").cloned().unwrap_or(serde_json::json!({}));
+
+                let result = stc.storage.get(collection, id).await;
+                let (doc, is_new) = match result {
+                    Ok(Some(mut d)) => {
+                        d.data = update_data;
+                        d.version += 1;
+                        d.updated_at = chrono::Utc::now().timestamp_millis();
+                        (d, false)
+                    }
+                    _ => {
+                        let mut doc = Document::new(collection.to_string(), update_data);
+                        doc.id = id.to_string();
+                        (doc, true)
+                    }
+                };
+
+                match stc.storage.insert(doc.clone()).await {
+                    Ok(_) => {
+                        if let Some(coll) = collection_clone {
+                            if is_new {
+                                broadcast_op(Arc::clone(&stc), coll, "doc_created", serde_json::to_value(&doc).unwrap()).await;
+                            } else {
+                                broadcast_op(Arc::clone(&stc), coll, "doc_updated", serde_json::to_value(&doc).unwrap()).await;
+                            }
+                        }
+                        let _ = socket.emit("update_success", &doc);
+                    }
+                    Err(e) => {
+                        let _ = socket.emit("update_error", &serde_json::json!({"error": e.to_string()}));
+                    }
+                }
+            });
+        });
+
+        let st_delete = Arc::clone(&st);
+        socket.on("delete", move |socket: SocketRef, Data(data): Data<serde_json::Value>| {
+            let stc = Arc::clone(&st_delete);
+            let collection_clone = data.get("collection").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+            tokio::spawn(async move {
+                let collection = data.get("collection").and_then(|v| v.as_str()).unwrap_or("");
+                let id = data.get("id").and_then(|v| v.as_str()).unwrap_or("");
+
+                match stc.storage.delete(collection, id).await {
+                    Ok(_) => {
+                        if let Some(coll) = collection_clone {
+                            let _ = stc.io.to(coll).emit("doc_deleted", &id);
+                        }
+                        let _ = socket.emit("delete_success", true);
+                    }
+                    Err(e) => {
+                        let _ = socket.emit("delete_error", &serde_json::json!({"error": e.to_string()}));
                     }
                 }
             });
@@ -302,15 +561,50 @@ async fn main() -> anyhow::Result<()> {
 
     // --- HTTP Router ---
 
-    let app = Router::new()
+    // 公开端点（不需要JWT认证）
+    let public_routes = Router::new()
+        .route("/call_hook/auth", post(call_hook)) // auth hook 用于登录/注册
+        .route("/health", get(health_check));
+
+    // 受保护端点（需要JWT认证）
+    let protected_routes = Router::new()
         .route("/collections/:collection", post(create_doc).get(list_docs))
         .route("/collections/:collection/:id", get(get_doc))
         .route("/collections/:collection/:id", put(update_doc))
         .route("/collections/:collection/:id", delete(delete_doc))
         .route("/query", post(run_query))
+        .route("/queries/:name", post(run_named_query)) // 🔒 白名单查询 REST 端点 (用于 SWR)
         .route("/transaction", post(commit_transaction))
         .route("/call_hook/:event", post(call_hook))
-        .layer(CorsLayer::permissive())
+        .layer(axum::middleware::from_fn(
+            jwt_middleware::jwt_middleware,
+        ));
+
+    // --- CORS Configuration ---
+    // Configure CORS to allow requests from the blog frontend (localhost:3000)
+    // This enables cross-origin requests for development and production
+    let cors = CorsLayer::new()
+        .allow_origin(Any) // Allow any origin for development
+        .allow_methods([ // Allow common HTTP methods
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::PATCH,
+            Method::OPTIONS,
+        ])
+        .allow_headers([ // Specify allowed headers (required when credentials are enabled)
+            "content-type",
+            "authorization",
+            "x-requested-with",
+            "accept",
+        ])
+        .allow_credentials(true) // Allow credentials (cookies, auth headers)
+        .max_age(std::time::Duration::from_secs(3600)); // Cache preflight for 1 hour
+
+    let app = public_routes
+        .merge(protected_routes)
+        .layer(cors)
         .layer(io_layer)
         .with_state(state);
 
@@ -336,6 +630,14 @@ async fn monitor_nodes(state: &AppState) {
 }
 
 // --- HTTP Handlers ---
+
+/// Health check endpoint (public, no auth required)
+async fn health_check() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "status": "healthy",
+        "timestamp": chrono::Utc::now().to_rfc3339()
+    }))
+}
 
 async fn create_doc(
     State(state): State<Arc<AppState>>,
@@ -426,6 +728,86 @@ async fn delete_doc(
 async fn run_query(State(state): State<Arc<AppState>>, Json(query): Json<Query>) -> Json<Vec<Document>> {
     let docs = state.storage.query(query).await.unwrap();
     Json(docs)
+}
+
+/// 🔒 白名单查询 REST 端点 - 用于 SWR 缓存和初始加载
+/// 通过 HTTP 执行安全的命名查询，支持浏览器缓存
+async fn run_named_query(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Path(name): Path<String>,
+    Json(params): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    use std::collections::HashMap;
+
+    // 1. 提取用户信息 (如果提供了认证头)
+    let (user_id, user_role) = match extract_user_info_auth(&headers) {
+        Ok(info) => info,
+        Err(_) => ("guest".to_string(), "guest".to_string()), // 允许guest访问公开查询
+    };
+
+    // 2. 创建用户上下文
+    let user_context = UserContext {
+        user_id: user_id.clone(),
+        user_role: user_role.clone(),
+    };
+
+    // 3. 转换参数格式
+    let client_params: HashMap<String, serde_json::Value> = if let Ok(obj) = serde_json::from_value(params) {
+        obj
+    } else {
+        eprintln!("❌ Invalid parameters format for query '{}'", name);
+        return Err(StatusCode::BAD_REQUEST);
+    };
+
+    // 4. 执行白名单查询 (带日志)
+    let start_time = std::time::Instant::now();
+    eprintln!("🔍 REST Whitelist Query: {} | User: {} ({})", name, user_id, user_role);
+
+    let result = state.query_executor
+        .execute_query(&name, &user_context, &client_params)
+        .map_err(|err| {
+            eprintln!("❌ Query execution failed: {} | Error: {:?}", name, err);
+            StatusCode::FORBIDDEN
+        })?;
+
+    let duration = start_time.elapsed();
+    eprintln!("✅ Query executed successfully: {} | Time: {:?}", name, duration);
+
+    // 5. 转换结果为JSON
+    let json_result = match serde_json::to_value(&result) {
+        Ok(val) => val,
+        Err(_) => {
+            eprintln!("❌ Failed to serialize query result for '{}'", name);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    Ok(Json(json_result))
+}
+
+/// 辅助函数：从HTTP头中提取用户信息
+fn extract_user_info_auth(headers: &axum::http::HeaderMap) -> Result<(String, String), StatusCode> {
+    use axum::http::header::AUTHORIZATION;
+
+    let auth_header = headers.get(AUTHORIZATION)
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    let token = auth_header.to_str()
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+
+    let token = token.strip_prefix("Bearer ")
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    let parts: Vec<&str> = token.split(':').collect();
+    if parts.len() < 2 {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    let user_id = parts[0].to_string();
+    let user_role = parts[1].to_string();
+
+    Ok((user_id, user_role))
 }
 
 async fn commit_transaction(
@@ -540,6 +922,11 @@ mod tests {
         let mut data = json!({ "username": "alice", "password": "hashed_password", "secret": "my_secret_token", "age": 30 });
 
         let (io_layer, io) = SocketIo::builder().build_layer();
+
+        // 为测试创建一个简单的查询执行器
+        let test_query_config = r#"{"queries": {}}"#;
+        let query_executor = Arc::new(QueryExecutor::from_json(test_query_config).unwrap());
+
         let state = Arc::new(AppState {
             storage: storage.clone(),
             io,
@@ -547,6 +934,7 @@ mod tests {
             node_id: 1,
             event_bus: Arc::new(EventBus::new().0),
             hook_manager: Arc::new(HookManager::new()),
+            query_executor, // 添加查询执行器
         });
 
         redact_internal_fields(&state, "users", &mut data).await;
