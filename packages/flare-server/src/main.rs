@@ -4,6 +4,7 @@ use axum::{
     routing::{get, post, put, delete},
     Json, Router,
 };
+use flare_db::redb::RedbStorage;
 use flare_db::{SledStorage, Storage, memory::MemoryStorage, persistence::PersistenceManager};
 use flare_protocol::{Document, Event, EventType, Webhook, Query, TransactionRequest, BatchOperation};
 use flare_protocol::cluster::cluster_service_server::ClusterServiceServer;
@@ -44,6 +45,40 @@ fn parse_method(method: &str) -> Option<Method> {
         "OPTIONS" => Some(Method::OPTIONS),
         "HEAD" => Some(Method::HEAD),
         _ => None,
+    }
+}
+
+#[async_trait]
+impl WebhooksProvider for RedbStorage {
+    async fn get_webhooks_for_event(&self, event_type: &EventType) -> anyhow::Result<Vec<Webhook>> {
+        let docs = self.list("__webhooks__").await?;
+        let mut result = Vec::new();
+        for doc in docs {
+            let url = doc.data.get("url")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("Missing url in webhook"))?
+                .to_string();
+            let secret = doc.data.get("secret")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let events: Vec<EventType> = serde_json::from_value(
+                doc.data.get("events")
+                    .cloned()
+                    .unwrap_or(serde_json::json!([]))
+            )?;
+
+            let webhook = Webhook {
+                id: doc.id.clone(),
+                url,
+                events,
+                secret,
+            };
+
+            if webhook.events.contains(event_type) {
+                result.push(webhook);
+            }
+        }
+        Ok(result)
     }
 }
 
@@ -140,7 +175,7 @@ async fn main() -> anyhow::Result<()> {
     let (io_layer, io) = SocketIo::builder().build_layer();
 
     // Storage backend selection
-    let storage_backend = std::env::var("FLARE_STORAGE_BACKEND").unwrap_or("sled".to_string());
+    let storage_backend = std::env::var("FLARE_STORAGE_BACKEND").unwrap_or("redb".to_string());
     let storage: Arc<dyn Storage> = match storage_backend.as_str() {
         "memory" => {
             tracing::info!("Using in-memory storage backend");
@@ -169,10 +204,15 @@ async fn main() -> anyhow::Result<()> {
 
             Arc::new(memory_storage)
         }
-        _ => {
+        "sled" => {
             tracing::info!("Using SledDB storage backend");
             let db_path = std::env::var("FLARE_DB_PATH").unwrap_or(format!("./flare_{}.db", node_id));
             Arc::new(SledStorage::new(db_path)?)
+        }
+        _ => {
+            tracing::info!("Using Redb storage backend");
+            let db_path = std::env::var("FLARE_DB_PATH").unwrap_or(format!("./flare_{}.redb", node_id));
+            Arc::new(RedbStorage::new(db_path)?)
         }
     };
 
