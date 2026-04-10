@@ -8,6 +8,7 @@ pub mod hook_manager;
 pub mod permissions;
 pub mod whitelist;
 pub mod jwt_middleware;
+pub mod cors_config;
 
 // Re-export for integration tests
 pub use cluster::ClusterManager;
@@ -15,6 +16,7 @@ pub use hooks::{EventBus, WebhookDispatcher, WebhooksProvider};
 pub use hook_manager::HookManager;
 pub use permissions::{Authorizer, PermissionContext, ResourceType};
 pub use whitelist::{QueryExecutor, NamedQueriesConfig, UserContext, InjectionContext, QueryResult};
+pub use cors_config::{CorsConfig, load_cors_config, load_cors_config_from_env};
 
 // AppState for testing and integration
 use std::sync::Arc;

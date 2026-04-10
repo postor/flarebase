@@ -1,13 +1,13 @@
 /**
- * Flarebase Client Integration
+ * Flarebase Client Integration - TEMPORARY WORKAROUND VERSION
  *
- * Updated to use new TypeScript SDK (v0.2.0)
+ * Using direct API calls to bypass broken named query executor
  */
 
 import { FlareClient as SDKFlareClient } from '@flarebase/client';
 import type { User, LoginCredentials, RegistrationData, AuthResponse } from '@flarebase/client';
 
-const FLAREBASE_URL = process.env.FLAREBASE_URL || 'http://localhost:3001';
+const FLAREBASE_URL = process.env.FLAREBASE_URL || 'http://localhost:3000';
 
 /**
  * Flarebase Client wrapper for blog platform

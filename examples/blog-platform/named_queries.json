@@ -1,6 +1,6 @@
 {
   "queries": {
-    "list_published_posts": {
+    "get_published_posts": {
       "type": "simple",
       "collection": "posts",
       "filters": [
@@ -9,7 +9,7 @@
       "limit": "$params.limit",
       "offset": "$params.offset"
     },
-    "list_my_posts": {
+    "get_posts_by_author": {
       "type": "simple",
       "collection": "posts",
       "filters": [

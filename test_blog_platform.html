@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Blog Platform Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .test-section {
+            background: white;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .success { color: #10b981; font-weight: bold; }
+        .error { color: #ef4444; font-weight: bold; }
+        .info { color: #3b82f6; }
+        pre {
+            background: #f3f4f6;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+        button {
+            background: #3b82f6;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        button:hover {
+            background: #2563eb;
+        }
+        #results {
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>🧪 Blog Platform Test Suite</h1>
+    <p class="info">Flarebase Server: http://localhost:3000</p>
+
+    <div class="test-section">
+        <h2>Manual Tests</h2>
+        <button onclick="testConnection()">Test Connection</button>
+        <button onclick="testCreatePost()">Create Test Post</button>
+        <button onclick="testNamedQuery()">Test Named Query</button>
+        <button onclick="clearResults()">Clear Results</button>
+    </div>
+
+    <div id="results"></div>
+
+    <script type="module">
+        import { FlareClient } from './clients/js/dist/index.js';
+
+        const FLAREBASE_URL = 'http://localhost:3000';
+        let client = new FlareClient(FLAREBASE_URL);
+
+        function log(message, type = 'info') {
+            const resultsDiv = document.getElementById('results');
+            const timestamp = new Date().toLocaleTimeString();
+            const className = type === 'success' ? 'success' : type === 'error' ? 'error' : 'info';
+            resultsDiv.innerHTML += `<p class="${className}">[${timestamp}] ${message}</p>`;
+        }
+
+        function clearResults() {
+            document.getElementById('results').innerHTML = '';
+        }
+
+        async function testConnection() {
+            try {
+                log('Testing connection to Flarebase server...', 'info');
+                const posts = await client.collection('posts').get();
+                log(`✅ Connected! Found ${posts.length} posts`, 'success');
+            } catch (error) {
+                log(`❌ Connection failed: ${error.message}`, 'error');
+            }
+        }
+
+        async function testCreatePost() {
+            try {
+                log('Creating a test post...', 'info');
+                const newPost = await client.collection('posts').add({
+                    title: `Test Post ${Date.now()}`,
+                    content: 'This is a test post created automatically.',
+                    status: 'published',
+                    slug: `test-post-${Date.now()}`,
+                    published_at: Date.now(),
+                    author_id: 'test-author',
+                    created_at: Date.now(),
+                    updated_at: Date.now()
+                });
+                log(`✅ Created post with ID: ${newPost.id}`, 'success');
+            } catch (error) {
+                log(`❌ Create post failed: ${error.message}`, 'error');
+            }
+        }
+
+        async function testNamedQuery() {
+            try {
+                log('Testing named query...', 'info');
+                const result = await client.namedQuery('get_published_posts', { limit: 5, offset: 0 });
+                log(`✅ Named query returned ${result.length} posts`, 'success');
+                if (result.length > 0) {
+                    log(`First post: ${result[0].data?.title || 'No title'}`, 'info');
+                }
+            } catch (error) {
+                log(`❌ Named query failed: ${error.message}`, 'error');
+            }
+        }
+
+        // Auto-run tests on page load
+        async function runAutoTests() {
+            log('=== Starting automatic tests ===', 'info');
+            await testConnection();
+            await new Promise(resolve => setTimeout(resolve, 500));
+            await testNamedQuery();
+            await new Promise(resolve => setTimeout(resolve, 500));
+            await testCreatePost();
+            log('=== Tests complete ===', 'info');
+        }
+
+        // Expose functions to window
+        window.testConnection = testConnection;
+        window.testCreatePost = testCreatePost;
+        window.testNamedQuery = testNamedQuery;
+        window.clearResults = clearResults;
+
+        // Run tests on page load
+        runAutoTests();
+    </script>
+</body>
+</html>

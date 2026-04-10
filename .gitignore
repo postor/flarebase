@@ -23,6 +23,10 @@ package-lock.json
 .env.local
 .env.*.local
 
+# Configuration files (environment-specific)
+cors_config.json
+named_queries.json
+
 # IDE and OS specific
 .vscode/
 .idea/

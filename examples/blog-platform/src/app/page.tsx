@@ -21,8 +21,14 @@ export default function HomePage() {
     const fetchPosts = async () => {
       try {
         const flarebase = getFlarebaseClient();
-        // ✅ 使用安全的白名单查询
-        const publishedPosts: any[] = await flarebase.blogQueries.getPublishedPosts(20, 0);
+        // ✅ TEMPORARY FIX: Use direct collection API instead of named queries
+        console.log('Fetching posts from:', flarebase.collection('posts'));
+        const allPosts: any[] = await flarebase.collection('posts').get();
+        console.log('All posts:', allPosts);
+
+        // Filter for published posts on client side (temporary workaround)
+        const publishedPosts = allPosts.filter(post => post.data?.status === 'published');
+        console.log('Published posts:', publishedPosts);
 
         // Sort by published_at date (newest first)
         const sortedPosts = publishedPosts.sort((a, b) => {
@@ -31,8 +37,10 @@ export default function HomePage() {
           return bTime - aTime;
         });
 
+        console.log('Sorted posts:', sortedPosts);
         setPosts(sortedPosts);
       } catch (err) {
+        console.error('Error fetching posts:', err);
         setError(err instanceof Error ? err.message : 'Failed to fetch posts');
       } finally {
         setLoading(false);
