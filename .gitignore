@@ -5,11 +5,13 @@ target/
 # Database files
 *.db
 *.db-journal
+*.redb
 flare_*.db/
 
 # Build error logs
 *_error.txt
 *_errors.txt
+*.log
 
 # Node.js / Client artifacts
 node_modules/

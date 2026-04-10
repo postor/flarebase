@@ -388,21 +388,42 @@ async fn main() -> anyhow::Result<()> {
 
         // 🔒 白名单查询支持 - 通过 WebSocket 执行安全的命名查询
         let st_query = Arc::clone(&st);
-        socket.on("named_query", move |socket: SocketRef, Data((query_name, params)): Data<(String, serde_json::Value)>| {
+        socket.on("named_query", move |socket: SocketRef, Data(data): Data<serde_json::Value>| {
             let stc = Arc::clone(&st_query);
             let socket_id = socket.id.to_string();
-            let query_name_clone = query_name.clone();
+
+            eprintln!("🔍 [DEBUG] named_query received data: {:?}", data);
 
             tokio::spawn(async move {
+                // 解析传入的数据 - 支持数组格式 [query_name, params]
+                let (query_name, params) = if data.is_array() {
+                    let arr = data.as_array().unwrap();
+                    if arr.len() >= 2 {
+                        let qn = arr[0].as_str().unwrap_or("").to_string();
+                        let pr = arr[1].clone();
+                        (qn, pr)
+                    } else {
+                        eprintln!("❌ [DEBUG] named_query: array too short");
+                        let _ = socket.emit("query_error", &serde_json::json!({"error": "Invalid query format"}));
+                        return;
+                    }
+                } else if data.get("query").is_some() {
+                    let qn = data.get("query").unwrap().as_str().unwrap_or("").to_string();
+                    let pr = data.get("params").cloned().unwrap_or(serde_json::json!({}));
+                    (qn, pr)
+                } else {
+                    eprintln!("❌ [DEBUG] named_query: unrecognized format");
+                    let _ = socket.emit("query_error", &serde_json::json!({"error": "Invalid query format"}));
+                    return;
+                };
+
+                eprintln!("🔍 [DEBUG] parsed query_name: {}, params: {:?}", query_name, params);
+
                 use std::collections::HashMap;
 
                 // 从 WebSocket 连接中提取用户信息 (假设在连接时已认证)
-                // 这里使用一个简单的方式：从 socket 数据中获取，或者使用 guest
-                let user_id = "guest".to_string(); // 默认为 guest
+                let user_id = "guest".to_string();
                 let user_role = "guest".to_string();
-
-                // TODO: 从 socket 的 auth 数据中提取真实的用户信息
-                // 或者要求客户端在查询参数中提供认证令牌
 
                 let user_context = UserContext {
                     user_id: user_id.clone(),
@@ -415,18 +436,18 @@ async fn main() -> anyhow::Result<()> {
 
                 // 执行白名单查询
                 let start_time = std::time::Instant::now();
-                tracing::info!("🔍 WebSocket Whitelist Query: {} | Socket: {} | User: {}",
-                    query_name, socket_id, user_id);
+                eprintln!("🔍 [DEBUG] Executing query: {} with params: {:?}", query_name, client_params);
 
                 match stc.query_executor.execute_query(&query_name, &user_context, &client_params) {
                     Ok(result) => {
                         let duration = start_time.elapsed();
-                        tracing::info!("✅ Query executed successfully: {} | Time: {:?}", query_name, duration);
+                        eprintln!("✅ [DEBUG] Query executed successfully: {} | Time: {:?}", query_name, duration);
 
                         // 转换结果为 JSON
                         if let Ok(json_result) = serde_json::to_value(&result) {
                             let _ = socket.emit("query_success", &json_result);
                         } else {
+                            eprintln!("❌ [DEBUG] Failed to serialize query result");
                             let _ = socket.emit("query_error", &serde_json::json!({
                                 "error": "Failed to serialize query result"
                             }));
@@ -434,12 +455,11 @@ async fn main() -> anyhow::Result<()> {
                     }
                     Err(err) => {
                         let duration = start_time.elapsed();
-                        tracing::error!("❌ Query execution failed: {} | Error: {:?} | Time: {:?}",
-                            query_name, err, duration);
+                        eprintln!("❌ [DEBUG] Query execution failed: {} | Error: {:?} | Time: {:?}", query_name, err, duration);
 
                         let _ = socket.emit("query_error", &serde_json::json!({
                             "error": err.to_string(),
-                            "query": query_name_clone
+                            "query": query_name
                         }));
                     }
                 }
@@ -493,7 +513,14 @@ async fn main() -> anyhow::Result<()> {
                 let collection = data.get("collection").and_then(|v| v.as_str()).unwrap_or("");
 
                 match stc.storage.list(collection).await {
-                    Ok(docs) => { let _ = socket.emit("list_success", &docs); }
+                    Ok(docs) => {
+                        // 将数组包装在对象中发送，避免 Socket.IO 的数组处理问题
+                        let response = serde_json::json!({
+                            "results": docs,
+                            "count": docs.len()
+                        });
+                        let _ = socket.emit("list_success", &response);
+                    }
                     Err(e) => { let _ = socket.emit("list_error", &serde_json::json!({"error": e.to_string()})); }
                 }
             });
