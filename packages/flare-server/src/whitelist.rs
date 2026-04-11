@@ -386,7 +386,19 @@ impl QueryExecutor {
                     FilterConditionWrapper::Array(arr) => {
                         let field = &arr.0;
                         let operator_value = &arr.1;
-                        let injected_value = operator_value.get_value();
+                        let raw_value = operator_value.get_value();
+
+                        // Check if value is a variable reference (starts with $)
+                        let injected_value = if let Some(str_val) = raw_value.as_str() {
+                            if str_val.starts_with('$') {
+                                // Resolve variable using injection context
+                                self.inject_value(str_val, context)?
+                            } else {
+                                raw_value
+                            }
+                        } else {
+                            raw_value
+                        };
 
                         filters.push(json!({
                             "field": field,
@@ -854,5 +866,102 @@ mod whitelist_tests {
 
         let result = executor.execute_query("admin_only_query", &admin_context, &HashMap::new());
         assert!(result.is_ok(), "Admin should be able to access any query");
+    }
+
+    #[test]
+    fn test_parameter_substitution_in_filters() {
+        let json_str = r#"
+        {
+            "queries": {
+                "check_email_exists": {
+                    "type": "simple",
+                    "collection": "users",
+                    "filters": [
+                        ["email", {"Eq": "$params.email"}]
+                    ]
+                }
+            }
+        }
+        "#;
+
+        let executor = QueryExecutor::from_json(json_str).unwrap();
+
+        let user_context = UserContext {
+            user_id: "user-1".to_string(),
+            user_role: "user".to_string(),
+        };
+
+        let mut params = HashMap::new();
+        params.insert("email".to_string(), json!("test@example.com"));
+
+        let result = executor.execute_query("check_email_exists", &user_context, &params);
+        assert!(result.is_ok());
+
+        let query_result = result.unwrap();
+        match query_result {
+            QueryResult::Simple(simple_result) => {
+                assert_eq!(simple_result.collection, "users");
+                assert_eq!(simple_result.filters.len(), 1);
+
+                let filter = &simple_result.filters[0];
+                assert_eq!(filter["field"], "email");
+                assert_eq!(filter["operator"], "Eq");
+
+                // The key assertion: filter value should be the actual parameter value,
+                // NOT the string "$params.email"
+                assert_eq!(filter["value"], json!("test@example.com"));
+                assert_ne!(filter["value"], json!("$params.email"));
+            }
+            _ => panic!("Expected simple query result"),
+        }
+    }
+
+    #[test]
+    fn test_parameter_substitution_with_user_context() {
+        let json_str = r#"
+        {
+            "queries": {
+                "get_my_posts": {
+                    "type": "simple",
+                    "collection": "posts",
+                    "filters": [
+                        ["author_id", {"Eq": "$USER_ID"}],
+                        ["status", {"Eq": "$params.status"}]
+                    ]
+                }
+            }
+        }
+        "#;
+
+        let executor = QueryExecutor::from_json(json_str).unwrap();
+
+        let user_context = UserContext {
+            user_id: "user-456".to_string(),
+            user_role: "author".to_string(),
+        };
+
+        let mut params = HashMap::new();
+        params.insert("status".to_string(), json!("published"));
+
+        let result = executor.execute_query("get_my_posts", &user_context, &params);
+        assert!(result.is_ok());
+
+        let query_result = result.unwrap();
+        match query_result {
+            QueryResult::Simple(simple_result) => {
+                assert_eq!(simple_result.filters.len(), 2);
+
+                // First filter: $USER_ID should be substituted
+                let filter1 = &simple_result.filters[0];
+                assert_eq!(filter1["field"], "author_id");
+                assert_eq!(filter1["value"], json!("user-456"));
+
+                // Second filter: $params.status should be substituted
+                let filter2 = &simple_result.filters[1];
+                assert_eq!(filter2["field"], "status");
+                assert_eq!(filter2["value"], json!("published"));
+            }
+            _ => panic!("Expected simple query result"),
+        }
     }
 }

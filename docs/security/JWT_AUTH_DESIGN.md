@@ -2,22 +2,22 @@
 
 ## Overview
 
-Flarebase implements JWT (JSON Web Token) based authentication for securing REST API endpoints and providing identity context in Hooks.
+Flarebase implements JWT (JSON Web Token) based authentication for securing REST API endpoints and providing identity context in Custom Plugins.
 
 ## Architecture
 
 ### JWT Flow
 
 ```
-Client                    Server                      Hook Service
+Client                    Server                      Plugin Service
   |                         |                             |
   |--1. POST /auth/login -->|                             |
-  |                         |--2. call_hook("auth") ----->|
+  |                         |--2. WebSocket plugin_req -->|
   |                         |                             |--3. Validate credentials
-  |                         |<----4. Return user + token --|
+  |                         |<----4. WebSocket plugin_res --|
   |<--5. Return JWT --------|                             |
   |                         |                             |
-  |--6. GET /posts -------->|--7. Verify JWT ------------>| (if auth hook registered)
+  |--6. GET /posts -------->|--7. Verify JWT ------------>| (if auth plugin registered)
   |                         |                             |
   |<--8. Return data -------|                             |
 ```
@@ -29,15 +29,30 @@ Client                    Server                      Hook Service
    - Extracts user context (user_id, email, role)
    - Injects context into request state
 
-2. **Auth Hook** (Fixed hook name: `"auth"`)
+2. **Auth Plugin** (Fixed plugin event: `"auth"`)
    - Handles authentication actions: login, register, logout
    - Returns JWT token on successful authentication
    - Receives `$jwt` object with current user context
+   - **Uses persistent WebSocket connection, NOT HTTP POST**
 
 3. **REST API Security**
    - All `/collections/*` endpoints require valid JWT
    - `/queries/:name` endpoints require valid JWT
    - Whitelist queries receive user context from JWT
+
+## Why WebSocket Instead of HTTP POST?
+
+**Problem with HTTP POST webhooks**:
+- Race conditions: Multiple concurrent requests may arrive out of order
+- No persistent connection context
+- Additional HTTP overhead for each request
+- Harder to handle long-running operations
+
+**Advantages of WebSocket plugins**:
+- **Sequential processing**: Requests processed in order per connection
+- **Persistent context**: Plugin maintains state across requests
+- **Bidirectional communication**: Server can push updates to plugin
+- **No race conditions**: Single connection ensures serial execution
 
 ## JWT Token Format
 
@@ -59,10 +74,30 @@ Client                    Server                      Hook Service
 - `iat`: Issued at timestamp
 - `exp`: Expiration timestamp (default 1 hour)
 
-## Auth Hook Protocol
+## Auth Plugin Protocol
+
+### Connection
+
+Plugin connects to WebSocket endpoint:
+```
+ws://localhost:3000/hooks
+```
+
+And registers with:
+```json
+{
+  "event": "register",
+  "token": "PLUGIN_TOKEN",
+  "capabilities": {
+    "events": ["auth"],
+    "user_context": {}
+  }
+}
+```
 
 ### Request Format
 
+Server sends via WebSocket:
 ```json
 {
   "event_name": "auth",
@@ -82,6 +117,8 @@ Client                    Server                      Hook Service
 ```
 
 ### Response Format
+
+Plugin responds via WebSocket:
 
 **Success (login)**:
 ```json
@@ -132,7 +169,7 @@ Client                    Server                      Hook Service
 
 ### Public Endpoints (No Auth)
 
-- `POST /call_hook/auth` - Login/Register via auth hook
+- `POST /auth/login` - Login via auth plugin (triggers plugin request)
 - `GET /health` - Health check
 
 ### Protected Endpoints (Require JWT)
@@ -148,8 +185,8 @@ Client                    Server                      Hook Service
 - `POST /query` - Run custom query (admin only)
 - `POST /queries/:name` - Run named query (whitelisted)
 
-#### Hook Operations
-- `POST /call_hook/:event` - Call non-auth hook
+#### Plugin Operations
+- Client apps call plugins via WebSocket, not HTTP
 
 ## Client SDK Usage
 
@@ -160,7 +197,7 @@ import { FlareClient } from '@flarebase/sdk';
 
 const client = new FlareClient('http://localhost:3000');
 
-// Login via auth hook
+// Login via auth plugin (uses WebSocket internally)
 const result = await client.auth.login({
   email: 'user@example.com',
   password: 'password'
@@ -225,13 +262,13 @@ function LoginPage() {
 
 ### Phase 1: Server Infrastructure
 - [x] JWT middleware module
-- [x] Auth hook protocol
+- [x] Auth plugin protocol (WebSocket-based)
 - [x] REST endpoint protection
 
 ### Phase 2: Client SDK
 - [ ] JWT token management
 - [ ] Auto-injection in headers
-- [ ] Auth hook integration
+- [ ] Auth plugin integration
 
 ### Phase 3: Framework Integrations
 - [ ] React hooks
@@ -247,15 +284,26 @@ function LoginPage() {
 
 ### Unit Tests
 - JWT generation and validation
-- Auth hook request/response handling
+- Auth plugin request/response handling
 - Middleware request interception
 
 ### Integration Tests
 - Complete login flow
 - Protected endpoint access
 - Token expiration handling
+- **Email exists/not-exists scenarios during registration**
 
 ### E2E Tests
 - Login via web interface
 - Data access with JWT
 - Token refresh flow
+
+## Error Codes
+
+| Code | Description |
+|------|-------------|
+| `INVALID_CREDENTIALS` | Email or password is incorrect |
+| `USER_EXISTS` | Email already registered |
+| `WEAK_PASSWORD` | Password doesn't meet requirements |
+| `INVALID_TOKEN` | Token is malformed or expired |
+| `UNAUTHORIZED` | No valid JWT provided |

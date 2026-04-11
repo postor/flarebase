@@ -472,6 +472,11 @@ export class FlareClient {
       headers: this._getAuthHeaders(),
       body: JSON.stringify({ collection, filters, limit, offset })
     });
+
+    if (!response.ok) {
+      throw new Error(`Query failed: ${response.statusText} (${response.status})`);
+    }
+
     return response.json();
   }
 
@@ -494,6 +499,11 @@ export class FlareClient {
         headers: this._getAuthHeaders(),
         body: JSON.stringify({ operations: transaction.operations })
       });
+
+      if (!response.ok) {
+        throw new Error(`Transaction failed: ${response.statusText} (${response.status})`);
+      }
+
       return response.json();
     } catch (error) {
       console.error('Transaction failed:', error);
@@ -688,6 +698,11 @@ export class CollectionReference {
       headers: this.client._getAuthHeaders(),
       body: JSON.stringify(data)
     });
+
+    if (!response.ok) {
+      throw new Error(`Add document failed: ${response.statusText} (${response.status})`);
+    }
+
     return response.json();
   }
 
@@ -699,6 +714,12 @@ export class CollectionReference {
       method: 'GET',
       headers: this.client._getAuthHeaders(),
     });
+
+    // Handle errors with empty bodies (401, 403, 500, etc.)
+    if (!response.ok && response.status !== 404) {
+      throw new Error(`Get collection failed: ${response.statusText} (${response.status})`);
+    }
+
     return response.json();
   }
 
@@ -815,6 +836,17 @@ export class DocumentReference {
       method: 'GET',
       headers: this.client._getAuthHeaders(),
     });
+
+    // 404 means document doesn't exist - return null
+    if (response.status === 404) {
+      return null;
+    }
+
+    // Other errors (401, 403, 500, etc.) should throw
+    if (!response.ok) {
+      throw new Error(`Get document failed: ${response.statusText} (${response.status})`);
+    }
+
     const data = await response.json();
     return data === null ? null : data;
   }
@@ -828,6 +860,11 @@ export class DocumentReference {
       headers: this.client._getAuthHeaders(),
       body: JSON.stringify(data)
     });
+
+    if (!response.ok) {
+      throw new Error(`Update document failed: ${response.statusText} (${response.status})`);
+    }
+
     return response.json();
   }
 
@@ -934,6 +971,11 @@ export class WriteBatch {
       headers: this.client._getAuthHeaders(),
       body: JSON.stringify({ operations: this.operations })
     });
+
+    if (!response.ok) {
+      throw new Error(`Batch commit failed: ${response.statusText} (${response.status})`);
+    }
+
     return response.json();
   }
 }

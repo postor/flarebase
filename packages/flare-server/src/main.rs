@@ -911,15 +911,35 @@ async fn run_named_query(
             // 获取所有文档，然后在内存中过滤（临时方案）
             let all_docs = state.storage.list(&simple.collection).await.unwrap_or_default();
 
-            // 应用filters（简化版本，只支持Eq操作符）
+            // 应用filters
             let filtered_docs: Vec<_> = all_docs.into_iter()
                 .filter(|doc| {
-                    // 简化过滤：只检查published状态
-                    if simple.collection == "posts" && name == "get_published_posts" {
-                        doc.data.get("status").and_then(|s| s.as_str()) == Some("published")
-                    } else {
-                        true // 其他查询暂不过滤
-                    }
+                    // Check if document matches all filters
+                    simple.filters.iter().all(|filter| {
+                        let field_name = filter.get("field").and_then(|f| f.as_str());
+                        let operator = filter.get("operator").and_then(|o| o.as_str());
+                        let expected_value = filter.get("value");
+
+                        if let (Some(field), Some(op), Some(expected)) = (field_name, operator, expected_value) {
+                            // Get the actual field value from document data
+                            let actual_value = doc.data.get(field);
+
+                            match op {
+                                "Eq" => actual_value == Some(expected),
+                                "Ne" => actual_value != Some(expected),
+                                "Contains" => {
+                                    if let (Some(actual_str), Some(expected_str)) = (actual_value.and_then(|v| v.as_str()), expected.as_str()) {
+                                        actual_str.contains(expected_str)
+                                    } else {
+                                        false
+                                    }
+                                }
+                                _ => true // Unsupported operators pass through
+                            }
+                        } else {
+                            true // Malformed filter passes through
+                        }
+                    })
                 })
                 .collect();
 

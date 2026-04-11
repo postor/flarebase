@@ -1,50 +1,28 @@
-# Flarebase Architecture
+# Architecture Documentation
 
-Flarebase is a distributed Backend-as-a-Service (BaaS) designed for high-performance, real-time data synchronization and flexible business logic integration through stateful hooks.
+Canonical architecture documentation:
 
-## Core Philosophical Principles
+- [../architecture/OVERVIEW.md](../architecture/OVERVIEW.md)
+- [../architecture/TRANSPORT.md](../architecture/TRANSPORT.md)
+- [../guides/CUSTOM_PLUGINS.md](../guides/CUSTOM_PLUGINS.md)
 
-1.  **Passive Infrastructure**: The database provides generic storage. Business logic lives in external "Hooks".
-2.  **Stateful Interaction**: Real-time communication via WebSockets (Socket.io) instead of one-way stateless webhooks.
-3.  **Session Isolation**: Automatic synchronization and scoping of data to specific user sessions.
-4.  **Zero Configuration**: Collections and schemas are created dynamically by client usage.
+## Key Changes
 
-## Component Overview
+- **Terminology**: `custom hook` renamed to `custom plugin`
+- **Transport**: All plugins use WebSocket connections (no HTTP POST)
+- **REST API**: Used for SSR / SWR, plugins handle business logic
 
-### 1. Storage Layer (`flare-db`)
-Uses **Sled** as an embedded key-value engine.
-- Each collection is a separate Sled Tree.
-- Supports atomic batch operations with optimistic concurrency control (preconditions).
+## Implementation Notes
 
-### 2. Server Layer (`flare-server`)
-The multi-protocol interface.
-- **HTTP**: Generic CRUD API.
-- **WebSocket**: Real-time subscriptions and Hook signaling.
-- **gRPC**: Internal cluster coordination and replication.
+Current implementation uses `HookManager`, `call_hook`, `hook_request` events. These will be renamed to plugin terminology in future releases.
 
-### 3. Hook Manager
-Orchestrates communication with external logic providers.
-- **Registration**: Hooks register their "Capabilities" (events they handle).
-- **Correlation**: Maps request IDs to `oneshot` channels to provide a synchronous-like `await` experience for asynchronous WebSocket calls.
+## Security
 
-## Data Flow: Custom Hook Trajectory
+See [Security Documentation](../security/README.md) for:
+- JWT authentication
+- Named queries and whitelisting
+- Plugin isolation and execution
 
-1.  **Client Request**: Client calls `flare.callHook("verify_otp", { code: "1234" })` via WebSocket.
-2.  **Signal Routing**: `HookManager` identifies an active Hook connection registered for `verify_otp`.
-3.  **Dispatch**: Flarebase sends a `hook_request` to the Hook service.
-4.  **External Logic**: The Hook service queries the DB, validates the OTP, and performs any side effects (e.g., updating user status).
-5.  **Return Path**: The Hook sends a `hook_response`. `HookManager` correlates the event and returns the result to the initial client's `Promise`.
+## Storage
 
-## Synchronization & Session Scoping
-
-Flarebase supports a unique "Session Table" pattern:
-- Tables named `_session_{sid}_name` are private to connection `sid`.
-- Any write to these tables automatically triggers an `emit` to the `session:{sid}` room.
-- This allows Hooks to "push" state to a specific client (e.g., "Verification Successful") without the client polling or the Hook knowing the client's public address.
-
-## Security Model
-
-Security is handled at three levels:
-1.  **Authentication**: Provided by the application layer (often facilitated by Hooks).
-2.  **Authorization (`Authorizer`)**: Resource-based permission checking (Read/Write/Delete/Moderate).
-3.  **Data Redaction (`SyncPolicy`)**: Field-level visibility rules that strip sensitive data (like `password_hash`) before it is synchronized to external clients.
+See [Indexing Design](./INDEXING_DESIGN.md) for database architecture details.

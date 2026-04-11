@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Registration Test</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a1a; color: #00ff00; }
+    .pass { color: #00ff00; }
+    .fail { color: #ff0000; }
+    .warn { color: #ffff00; }
+    pre { background: #000; padding: 10px; border-radius: 5px; }
+  </style>
+</head>
+<body>
+  <h1>🧪 Registration TDD Test</h1>
+  <div id="output"></div>
+
+  <script type="module">
+    const BASE_URL = 'http://localhost:3000';
+    const TEST_EMAIL = `web-test-${Date.now()}@test.com`;
+    const output = document.getElementById('output');
+
+    function log(msg) {
+      output.innerHTML += `<div>${msg}</div>`;
+    }
+
+    function generateAdminToken() {
+      const header = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+      const payload = btoa(JSON.stringify({
+        sub: 'test-admin',
+        email: 'admin@test.com',
+        role: 'admin',
+        iat: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + 3600
+      }));
+
+      const signature = btoa(`${header}.${payload}.flare_secret_key`);
+      return `${header}.${payload}.${signature}`;
+    }
+
+    async function testCreateUser() {
+      log('<h3>📧 Test 1: Create User</h3>');
+      log(`Email: ${TEST_EMAIL}`);
+
+      try {
+        const response = await fetch(`${BASE_URL}/collections/users`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + generateAdminToken()
+          },
+          body: JSON.stringify({
+            email: TEST_EMAIL,
+            name: 'Web Test User',
+            password_hash: 'test_hash',
+            role: 'author',
+            status: 'active',
+            created_at: Date.now()
+          })
+        });
+
+        log(`Status: ${response.status}`);
+
+        if (!response.ok) {
+          const text = await response.text();
+          log(`<span class="fail">❌ Failed: ${text}</span>`);
+          return false;
+        }
+
+        const data = await response.json();
+        log(`<span class="pass">✅ User created: ${data.id}</span>`);
+        log(`Email: ${data.data.email}`);
+        return data.id;
+
+      } catch (error) {
+        log(`<span class="fail">❌ Error: ${error.message}</span>`);
+        return false;
+      }
+    }
+
+    async function testCheckUsers(userId) {
+      log('<h3>📋 Test 2: Verify User Exists</h3>');
+
+      try {
+        const response = await fetch(`${BASE_URL}/collections/users`);
+        const users = await response.json();
+
+        log(`Total users: ${users.length}`);
+
+        const testUser = users.find(u => u.data?.email === TEST_EMAIL);
+        if (testUser) {
+          log(`<span class="pass">✅ Test user found: ${testUser.data.email}</span>`);
+          return true;
+        } else {
+          log('<span class="fail">❌ Test user not found</span>');
+          return false;
+        }
+      } catch (error) {
+        log(`<span class="fail">❌ Error: ${error.message}</span>`);
+        return false;
+      }
+    }
+
+    async function runTests() {
+      output.innerHTML = '<pre>';
+      log('🧪 Starting Registration Tests...');
+      log('='.repeat(50));
+
+      const userId = await testCreateUser();
+      const exists = await testCheckUsers(userId);
+
+      log('='.repeat(50));
+
+      if (userId && exists) {
+        log('<h2 class="pass">✅ ALL TESTS PASSED!</h2>');
+        log('<p>Registration system is working!</p>');
+        log('<p><a href="http://localhost:3002/auth/register" style="color: #00ffff;">Test Registration Page →</a></p>');
+      } else {
+        log('<h2 class="fail">❌ TESTS FAILED</h2>');
+      }
+
+      output.innerHTML += '</pre>';
+    }
+
+    runTests();
+  </script>
+</body>
+</html>

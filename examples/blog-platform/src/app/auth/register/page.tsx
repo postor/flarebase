@@ -27,8 +27,12 @@ export default function RegisterPage() {
     setLoading(true);
     setError(null);
 
+    console.log('🔵 [REGISTER] Starting registration process');
+    console.log('🔵 [REGISTER] Form data:', { ...formData, password: '***' });
+
     // Validate passwords match
     if (formData.password !== formData.confirmPassword) {
+      console.log('❌ [REGISTER] Passwords do not match');
       setError('Passwords do not match');
       setLoading(false);
       return;
@@ -36,15 +40,7 @@ export default function RegisterPage() {
 
     try {
       const flarebase = getFlarebaseClient();
-
-      // ✅ Check if user already exists using secure whitelist query
-      const existingUsers = await flarebase.blogQueries.checkEmailExists(formData.email);
-
-      if (existingUsers.length > 0) {
-        setError('User with this email already exists');
-        setLoading(false);
-        return;
-      }
+      console.log('✅ [REGISTER] Flarebase client initialized');
 
       // Create new user
       const userData = {
@@ -58,20 +54,32 @@ export default function RegisterPage() {
         // password: await hashPassword(formData.password)
       };
 
+      console.log('📝 [REGISTER] Creating user with data:', { ...userData, password: '***' });
       const result: any = await flarebase.collection('users').add(userData);
-      console.log('User created:', result);
+      console.log('✅ [REGISTER] User created successfully:', result);
 
-      // Create session
-      await fetch('/api/auth/me', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: result.id })
-      });
+      // Store user info in localStorage for session
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('user_id', result.id);
+        localStorage.setItem('user_email', formData.email);
+        localStorage.setItem('user_name', formData.name);
+        console.log('✅ [REGISTER] Session data stored in localStorage');
+      }
 
+      console.log('🚀 [REGISTER] Redirecting to home page...');
       // Redirect to home page
       router.push('/');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Registration failed');
+    } catch (err: any) {
+      console.error('❌ [REGISTER] Registration failed:', err);
+
+      // Check if error is due to duplicate email
+      if (err.message && err.message.includes('already exists')) {
+        setError('User with this email already exists');
+      } else if (err.message && err.message.includes('401')) {
+        setError('Authorization error. Please try again.');
+      } else {
+        setError(err instanceof Error ? err.message : 'Registration failed');
+      }
       setLoading(false);
     }
   };

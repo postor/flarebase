@@ -116,11 +116,80 @@ pub fn extract_jwt_from_header(headers: &axum::http::HeaderMap) -> Option<String
 }
 
 /// Axum middleware to validate JWT and inject user context
+/// Allows GET requests (read operations) without authentication for public content
+/// Allows __auth__ collection operations (login/register) without authentication
+/// Allows users collection creation with special header for registration
 pub async fn jwt_middleware(
     req: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    // Extract token from header
+    let method = req.method();
+    let uri = req.uri().to_string();
+
+    // Allow GET requests without authentication (public read access)
+    if method == axum::http::Method::GET {
+        // Try to extract token for optional authentication
+        if let Some(token) = extract_jwt_from_header(req.headers()) {
+            let jwt_manager = JwtManager::new();
+            if let Ok(claims) = jwt_manager.validate_token(&token) {
+                let user_context = jwt_manager.extract_user_context(&claims);
+                let mut req = req;
+                req.extensions_mut().insert(user_context);
+                return Ok(next.run(req).await);
+            }
+        }
+
+        // Proceed without user context for unauthenticated GET requests
+        return Ok(next.run(req).await);
+    }
+
+    // Allow __auth__ collection operations (login, register, password reset) without authentication
+    if uri.contains("/collections/__auth__") || uri.contains("/call_hook/auth") {
+        // Try to extract token for optional authentication, but don't require it
+        if let Some(token) = extract_jwt_from_header(req.headers()) {
+            let jwt_manager = JwtManager::new();
+            if let Ok(claims) = jwt_manager.validate_token(&token) {
+                let user_context = jwt_manager.extract_user_context(&claims);
+                let mut req = req;
+                req.extensions_mut().insert(user_context);
+                return Ok(next.run(req).await);
+            }
+        }
+
+        // Proceed without user context for unauthenticated auth operations
+        return Ok(next.run(req).await);
+    }
+
+    // Allow users collection POST with X-Internal-Service header (for auth hook)
+    // OR allow public user registration (without special header)
+    if uri.contains("/collections/users") && method == axum::http::Method::POST {
+        if let Some(_service_key) = req.headers().get("X-Internal-Service") {
+            // This is an internal service request (from auth hook)
+            // Generate admin user context
+            let user_context = UserContext {
+                user_id: "auth-hook-service".to_string(),
+                email: "auth-hook@internal".to_string(),
+                role: "admin".to_string(),
+            };
+            let mut req = req;
+            req.extensions_mut().insert(user_context);
+            return Ok(next.run(req).await);
+        } else {
+            // This is a public user registration
+            // Allow without authentication for registration
+            // Use a special "public-registration" user context
+            let user_context = UserContext {
+                user_id: "public-registration".to_string(),
+                email: "public@registration".to_string(),
+                role: "guest".to_string(),
+            };
+            let mut req = req;
+            req.extensions_mut().insert(user_context);
+            return Ok(next.run(req).await);
+        }
+    }
+
+    // For other POST, PUT, DELETE operations, require authentication
     let token = extract_jwt_from_header(req.headers())
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
