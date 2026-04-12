@@ -5,19 +5,19 @@
  * 1. Cleans up old data
  * 2. Starts flare-server with fresh DB
  * 3. Starts E2E plugin service
- * 4. Starts auth plugin service
+ * 4. Starts server.js (which includes auth plugin integrated)
  * 5. Waits for all services to be ready
  * 6. Runs E2E tests
  * 7. Cleans up
  */
 
-const { exec } = require('child_process');
+const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const net = require('net');
 const { promisify } = require('util');
 
-const execAsync = promisify(exec);
+const execAsync = promisify(require('child_process').exec);
 
 // E2E test DB directory (separate from development)
 const E2E_DB_DIR = path.join(__dirname, '..', 'data-e2e');
@@ -91,44 +91,40 @@ async function killProcessOnPort(port) {
 
 async function runTests() {
   let rustServer = null;
-  let e2ePlugin = null;
-  let authPlugin = null;
+  let blogServer = null;
 
   try {
     await cleanup();
 
     const FLARE_PORT = await findFreePort();
     const GRPC_PORT = await findFreePort();
-    const E2E_PLUGIN_PORT = await findFreePort();
-    const AUTH_PLUGIN_PORT = await findFreePort();
+    const BLOG_SERVER_PORT = await findFreePort();
     const FLARE_URL = `http://localhost:${FLARE_PORT}`;
     const DB_PATH = path.join(E2E_DB_DIR, `blog_e2e_${FLARE_PORT}.db`);
 
     console.log(`\n${'='.repeat(60)}`);
     console.log(`🚀 BLOG PLATFORM E2E TEST ORCHESTRATOR`);
     console.log(`${'='.repeat(60)}`);
-    console.log(`  Flarebase Server: ${FLARE_URL}`);
-    console.log(`  gRPC Port:        ${GRPC_PORT}`);
-    console.log(`  E2E Plugin HTTP:  ${E2E_PLUGIN_PORT}`);
-    console.log(`  Auth Plugin HTTP: ${AUTH_PLUGIN_PORT}`);
-    console.log(`  DB Path:          ${DB_PATH}`);
+    console.log(`  Flarebase Server:   ${FLARE_URL}`);
+    console.log(`  gRPC Port:          ${GRPC_PORT}`);
+    console.log(`  Blog Server (HTTP): ${BLOG_SERVER_PORT}`);
+    console.log(`  DB Path:            ${DB_PATH}`);
     console.log(`${'='.repeat(60)}\n`);
 
     // Pre-test cleanup
     await killProcessOnPort(FLARE_PORT);
     await killProcessOnPort(GRPC_PORT);
-    await killProcessOnPort(E2E_PLUGIN_PORT);
-    await killProcessOnPort(AUTH_PLUGIN_PORT);
+    await killProcessOnPort(BLOG_SERVER_PORT);
 
     // 1. Start Flarebase Rust Server
     console.log('📦 Step 1: Starting Flarebase server (empty DB)...');
-    const repoRoot = path.join(__dirname, '..', '..', '..');
+    const repoRoot = path.join(__dirname, '..', '..', '..', '..'); // tests/e2e -> .. -> tests -> .. -> blog-platform -> .. -> examples -> .. -> flarebase
     const serverBinary = path.join(repoRoot, 'target', 'release', 'flare-server.exe');
 
     // Fallback to debug build if release doesn't exist
     const finalBinary = fs.existsSync(serverBinary) ? serverBinary : path.join(repoRoot, 'target', 'debug', 'flare-server.exe');
 
-    rustServer = exec(`"${finalBinary}"`, {
+    rustServer = spawn(finalBinary, [], {
       cwd: repoRoot,
       windowsHide: true,
       env: {
@@ -157,82 +153,73 @@ async function runTests() {
     await waitForPort(FLARE_PORT, 30000);
     console.log('✅ Flarebase server is accepting connections');
 
-    // 2. Start E2E Plugin Service
-    console.log('🔌 Step 2: Starting E2E plugin service...');
-    e2ePlugin = exec(`node tests/e2e/e2e-plugin.js`, {
-      cwd: path.join(__dirname, '..'),
+    // 2. Start Blog Server (server.js includes auth plugin integrated)
+    console.log('🌐 Step 2: Starting Blog server (with integrated auth plugin)...');
+    blogServer = spawn('node', ['server.js'], {
+      cwd: path.join(__dirname, '..', '..'), // tests/e2e -> .. -> tests -> .. -> blog-platform
       env: {
         ...process.env,
         FLAREBASE_URL: FLARE_URL,
-        E2E_PLUGIN_HTTP_PORT: String(E2E_PLUGIN_PORT)
+        PORT: String(BLOG_SERVER_PORT),
+        NODE_ENV: 'development'
       }
     });
 
-    e2ePlugin.stdout.on('data', d => {
+    blogServer.stdout.on('data', d => {
       const text = d.toString();
-      if (text.includes('E2E') || text.includes('✅') || text.includes('📡')) {
-        console.log(`[E2E Plugin] ${text.trim()}`);
+      if (text.includes('Auth') || text.includes('✅') || text.includes('📡') || text.includes('Ready on')) {
+        console.log(`[Blog Server] ${text.trim()}`);
       }
     });
-    e2ePlugin.stderr.on('data', d => process.stderr.write(`[E2E Plugin Error] ${d}`));
+    blogServer.stderr.on('data', d => process.stderr.write(`[Blog Server Error] ${d}`));
 
-    // Wait for E2E plugin HTTP readiness
-    await waitForPort(E2E_PLUGIN_PORT, 15000);
-    console.log('✅ E2E plugin is ready');
-
-    // 3. Start Auth Plugin Service
-    console.log('🔐 Step 3: Starting Auth plugin service...');
-    authPlugin = exec(`node auth-plugin-service.js`, {
-      cwd: path.join(__dirname, '..'),
-      env: {
-        ...process.env,
-        FLAREBASE_URL: FLARE_URL
-      }
-    });
-
-    authPlugin.stdout.on('data', d => {
-      const text = d.toString();
-      if (text.includes('Auth') || text.includes('✅') || text.includes('📡')) {
-        console.log(`[Auth Plugin] ${text.trim()}`);
-      }
-    });
-    authPlugin.stderr.on('data', d => process.stderr.write(`[Auth Plugin Error] ${d}`));
+    // Wait for blog server readiness
+    await waitForPort(BLOG_SERVER_PORT, 30000);
+    console.log('✅ Blog server is ready (auth plugin integrated)');
 
     // Small delay to ensure plugin registration is fully processed
     console.log('⏳ Waiting for plugin registration to propagate...');
     await new Promise(r => setTimeout(r, 3000));
 
-    // 4. Run E2E Tests
-    console.log('\n🧪 Step 4: Running E2E tests...\n');
+    // 3. Run E2E Tests
+    console.log('\n🧪 Step 3: Running E2E tests...\n');
     process.env.FLARE_URL = FLARE_URL;
     process.env.FLAREBASE_URL = FLARE_URL;
-    process.env.E2E_PLUGIN_HTTP_PORT = String(E2E_PLUGIN_PORT);
     process.env.E2E_TEST_MODE = 'true';
 
-    return new Promise((resolve, reject) => {
-      const vitest = exec(`npx vitest run tests/e2e/blog.test.ts --config vitest.e2e.config.js`, {
-        cwd: path.join(__dirname, '..'),
+    const isWindows = process.platform === 'win32';
+    const vitestCmd = isWindows ? 'cmd' : 'npx';
+    const vitestArgs = isWindows
+      ? ['/c', 'npx', 'vitest', 'run', 'tests/e2e/blog.test.ts', '--config', 'vitest.e2e.config.js']
+      : ['vitest', 'run', 'tests/e2e/blog.test.ts', '--config', 'vitest.e2e.config.js'];
+
+    const vitestCode = await new Promise((resolve) => {
+      const vitest = spawn(vitestCmd, vitestArgs, {
+        cwd: path.join(__dirname, '..', '..'), // tests/e2e -> .. -> tests -> .. -> blog-platform
         env: {
           ...process.env,
           FLARE_URL: FLARE_URL,
           FLAREBASE_URL: FLARE_URL,
-          E2E_PLUGIN_HTTP_PORT: String(E2E_PLUGIN_PORT),
           E2E_TEST_MODE: 'true'
-        }
+        },
+        stdio: 'inherit'
       });
-
-      vitest.stdout.pipe(process.stdout);
-      vitest.stderr.pipe(process.stderr);
 
       vitest.on('close', (code) => {
-        if (code === 0) {
-          console.log('\n✅ All E2E tests passed!');
-          resolve();
-        } else {
-          reject(new Error(`E2E tests failed with code ${code}`));
-        }
+        resolve(code);
+      });
+
+      vitest.on('error', (err) => {
+        console.error('Vitest spawn error:', err);
+        resolve(1);
       });
     });
+
+    if (vitestCode !== 0) {
+      throw new Error(`E2E tests failed with code ${vitestCode}`);
+    }
+
+    console.log('\n✅ All E2E tests passed!');
 
   } catch (err) {
     console.error(`\n❌ E2E test failed: ${err.message}`);
@@ -243,13 +230,9 @@ async function runTests() {
       rustServer.kill();
       console.log('  - Flarebase server stopped');
     }
-    if (e2ePlugin) {
-      e2ePlugin.kill();
-      console.log('  - E2E plugin stopped');
-    }
-    if (authPlugin) {
-      authPlugin.kill();
-      console.log('  - Auth plugin stopped');
+    if (blogServer) {
+      blogServer.kill();
+      console.log('  - Blog server (with auth plugin) stopped');
     }
     console.log('👋 E2E test run complete.\n');
   }

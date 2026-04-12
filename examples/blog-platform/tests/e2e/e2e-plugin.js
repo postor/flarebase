@@ -50,7 +50,7 @@ class E2EPluginService {
         this.socket.emit('register', {
           token: 'E2E_TEST_TOKEN',
           capabilities: {
-            events: ['auth', 'create_post', 'get_posts'],
+            events: ['create_post', 'get_posts'],
             user_context: { role: 'e2e_plugin', service: 'e2e-test' }
           }
         });
@@ -87,15 +87,17 @@ class E2EPluginService {
         }
 
         try {
+          console.log(`⚙️ Calling handler for ${req.event_name}...`);
           const data = await handler(req);
-          console.log(`✅ Success for ${req.event_name}`);
+          console.log(`✅ Handler succeeded for ${req.event_name}, sending response...`);
           this.socket.emit('plugin_response', {
             request_id: req.request_id,
             status: 'success',
             data
           });
         } catch (error) {
-          console.error(`❌ Error for ${req.event_name}:`, error.message);
+          console.error(`❌ Handler error for ${req.event_name}:`, error.message);
+          console.error(`  Stack:`, error.stack);
           this.socket.emit('plugin_response', {
             request_id: req.request_id,
             status: 'error',
@@ -128,8 +130,7 @@ class E2EPluginService {
     this.handlers.set('auth', async (req) => {
       const { action, email, password, name } = req.params;
 
-      const fetch = (await import('node-fetch')).default;
-
+      // Use native fetch (Node.js 18+)
       if (action === 'login') {
         // Find user by email
         const response = await fetch(`${FLAREBASE_URL}/collections/users`, {
@@ -244,8 +245,6 @@ class E2EPluginService {
     this.handlers.set('create_post', async (req) => {
       const { title, content, authorId } = req.params;
 
-      const fetch = (await import('node-fetch')).default;
-
       const post = await fetch(`${FLAREBASE_URL}/collections/posts`, {
         method: 'POST',
         headers: {
@@ -277,8 +276,6 @@ class E2EPluginService {
     // Get posts handler
     this.handlers.set('get_posts', async (req) => {
       const { authorId, limit } = req.params;
-
-      const fetch = (await import('node-fetch')).default;
 
       let url = `${FLAREBASE_URL}/collections/posts`;
       if (authorId) {

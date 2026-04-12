@@ -172,6 +172,7 @@ async fn main() -> anyhow::Result<()> {
     let grpc_addr = std::env::var("GRPC_ADDR").unwrap_or("0.0.0.0:50051".to_string());
     let http_addr = std::env::var("HTTP_ADDR").unwrap_or("0.0.0.0:3000".to_string());
 
+    // Build Socket.IO layer (no CORS config needed here - handled by tower-http)
     let (io_layer, io) = SocketIo::builder().build_layer();
 
     // Storage backend selection
@@ -373,7 +374,8 @@ async fn main() -> anyhow::Result<()> {
                 match stc_call.plugin_manager.call_plugin(event, session_id, params, move |plugin_sid, req_data| {
                     // Send to the plugin socket in /plugins namespace by targeting the global plugin room
                     tracing::info!("Sending plugin request to socket {} for event {}", plugin_sid, event_name_for_emit);
-                    let _ = stc.io.to(format!("global_plugin_{}", plugin_sid)).emit("plugin_request", &req_data);
+                    // Emit on /plugins namespace where the plugin actually connected
+                    let _ = stc.io.of("/plugins").unwrap().to(format!("global_plugin_{}", plugin_sid)).emit("plugin_request", &req_data);
                 }).await {
                     Ok(res) => {
                         tracing::info!("Plugin call successful for event {:?}", res);
@@ -729,10 +731,12 @@ async fn main() -> anyhow::Result<()> {
             .max_age(std::time::Duration::from_secs(cors_config.max_age_secs))
     };
 
+    // 🔒 CRITICAL: Layer order matters! CORS must be OUTER layer to handle all requests
+    // including Socket.IO HTTP polling requests
     let app = public_routes
         .merge(protected_routes)
-        .layer(cors)
-        .layer(io_layer)
+        .layer(io_layer)    // Socket.IO layer (inner)
+        .layer(cors)        // CORS layer (outer) - processes ALL requests first
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(http_addr).await?;

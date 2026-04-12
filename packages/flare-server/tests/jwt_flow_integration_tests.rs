@@ -9,7 +9,7 @@
 
 use flare_server::{
     jwt_middleware::JwtManager,
-    hook_manager::HookManager,
+    plugin_manager::PluginManager,
     AppState,
 };
 use flare_db::memory::MemoryStorage;
@@ -25,7 +25,7 @@ async fn create_test_state_with_auth_hook() -> (Arc<AppState>, String) {
     let (_io_layer, io) = SocketIo::builder().build_layer();
     let cluster = Arc::new(flare_server::ClusterManager::new());
     let event_bus = Arc::new(flare_server::EventBus::new().0);
-    let hook_manager = Arc::new(HookManager::new());
+    let pm = Arc::new(PluginManager::new());
     let query_executor = Arc::new(flare_server::QueryExecutor::from_json(
         r#"{
             "queries": {
@@ -46,7 +46,7 @@ async fn create_test_state_with_auth_hook() -> (Arc<AppState>, String) {
         cluster,
         node_id: 1,
         event_bus,
-        hook_manager: hook_manager.clone(),
+        plugin_manager: pm.clone(),
         query_executor,
     });
 
@@ -60,7 +60,7 @@ async fn create_test_state_with_auth_hook() -> (Arc<AppState>, String) {
         },
     };
 
-    hook_manager.register_hook(socket_id.clone(), register);
+    pm.register_plugin(socket_id.clone(), register);
 
     (state, socket_id)
 }
@@ -318,7 +318,7 @@ async fn test_jwt_token_persistence_across_requests() {
 
 #[tokio::test]
 async fn test_jwt_hook_request_injection() {
-    let hook_manager = HookManager::new();
+    let pm = PluginManager::new();
 
     // 1. Register auth hook
     let socket_id = "auth_hook_inject".to_string();
@@ -330,7 +330,7 @@ async fn test_jwt_hook_request_injection() {
         },
     };
 
-    hook_manager.register_hook(socket_id, register);
+    pm.register_plugin(socket_id, register);
 
     // 2. Prepare auth hook request with JWT
     let jwt_manager = JwtManager::new();

@@ -28,37 +28,40 @@ export default function LoginPage() {
     try {
       const flarebase = getFlarebaseClient();
 
-      // ✅ Find user by email using secure whitelist query
-      const users: any[] = await flarebase.blogQueries.getUserByEmail(formData.email);
+      // 🔒 Use the auth plugin to login with proper password validation
+      // This calls the server-side auth plugin which validates the password hash
+      const loginResult = await flarebase.login(formData.email, formData.password);
 
-      if (users.length === 0) {
-        setError('User not found');
+      if (!loginResult.ok) {
+        setError('Login failed');
         setLoading(false);
         return;
       }
 
-      const user = users[0];
-
-      // In a real app, you would verify the password hash
-      // For demo purposes, we'll accept any password
-      // TODO: Implement proper password verification
-
       // Create session token (format: user_id:role:email)
-      const token = `${user.id}:${user.data.role}:${user.data.email}`;
+      const token = `${loginResult.user.id}:${loginResult.user.role}:${loginResult.user.email}`;
       localStorage.setItem('auth_token', token);
-      localStorage.setItem('user', JSON.stringify(user));
+      localStorage.setItem('user', JSON.stringify(loginResult.user));
 
       // Create session
       await fetch('/api/auth/me', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: user.id, token })
+        body: JSON.stringify({ user_id: loginResult.user.id, token })
       });
 
       // Redirect to home page
       router.push('/');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Login failed');
+    } catch (err: any) {
+      // Handle auth plugin errors (USER_NOT_FOUND, INVALID_CREDENTIALS, etc.)
+      const message = err.message || 'Login failed';
+      if (message.includes('USER_NOT_FOUND')) {
+        setError('User not found');
+      } else if (message.includes('INVALID_CREDENTIALS')) {
+        setError('Invalid credentials');
+      } else {
+        setError(message);
+      }
       setLoading(false);
     }
   };

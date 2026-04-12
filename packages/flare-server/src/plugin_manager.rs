@@ -536,4 +536,169 @@ mod tests {
 
         manager.remove_plugin(&sid);
     }
+
+    /// Test full round-trip: call_plugin → emit_fn → handle_response → call_plugin returns
+    /// This verifies the complete flow including response correlation and timeout handling
+    #[tokio::test]
+    async fn test_plugin_call_full_round_trip() {
+        let manager = Arc::new(PluginManager::new());
+
+        // Register a plugin
+        let sid = "round-trip-plugin".to_string();
+        let register = HookRegister {
+            token: "test".to_string(),
+            capabilities: HookCapabilities {
+                events: vec!["test_event".to_string()],
+                user_context: json!({}),
+            },
+        };
+        manager.register_plugin(sid.clone(), register);
+
+        // Channel to capture the emit_fn output (simulates Socket.IO sending to plugin)
+        let (emit_tx, mut emit_rx) = tokio::sync::mpsc::channel::<(String, Value)>(10);
+
+        let mgr_clone = manager.clone();
+        let call_task = tokio::spawn(async move {
+            mgr_clone.call_plugin(
+                "test_event".to_string(),
+                "client-session-1".to_string(),
+                json!({ "key": "value" }),
+                move |plugin_sid, req_data| {
+                    // This simulates: stc.io.of("/plugins").to(room).emit("plugin_request", data)
+                    let _ = emit_tx.try_send((plugin_sid, req_data));
+                }
+            ).await
+        });
+
+        // Wait for emit_fn to be called
+        let (captured_sid, captured_data) = tokio::time::timeout(
+            Duration::from_secs(5),
+            emit_rx.recv()
+        ).await.expect("emit_fn should be called").expect("should receive data");
+
+        // Verify the emitted data has the correct structure
+        assert_eq!(captured_sid, "round-trip-plugin");
+        assert_eq!(captured_data["event_name"], "test_event");
+        assert_eq!(captured_data["session_id"], "client-session-1");
+        assert_eq!(captured_data["params"]["key"], "value");
+        assert!(captured_data["request_id"].is_string());
+
+        // Simulate the plugin processing the request and sending back a response
+        let request_id = captured_data["request_id"].as_str().unwrap().to_string();
+        let response = HookResponse {
+            request_id: request_id.clone(),
+            status: "success".to_string(),
+            data: Some(json!({ "result": "plugin_processed", "echo": captured_data["params"] })),
+            error: None,
+        };
+
+        // This simulates: plugin emits "plugin_response" → handle_response is called
+        manager.handle_response(response);
+
+        // Verify call_plugin resolves with the correct result
+        let result = tokio::time::timeout(Duration::from_secs(5), call_task)
+            .await
+            .expect("call_plugin should complete")
+            .expect("task should not panic");
+
+        assert!(result.is_ok());
+        let result_data = result.unwrap();
+        assert_eq!(result_data["result"], "plugin_processed");
+        assert_eq!(result_data["echo"]["key"], "value");
+
+        // Clean up
+        manager.remove_plugin(&sid);
+    }
+
+    /// Test that call_plugin returns an error when plugin response is an error
+    #[tokio::test]
+    async fn test_plugin_call_error_response() {
+        let manager = Arc::new(PluginManager::new());
+
+        let sid = "error-plugin".to_string();
+        let register = HookRegister {
+            token: "test".to_string(),
+            capabilities: HookCapabilities {
+                events: vec!["error_event".to_string()],
+                user_context: json!({}),
+            },
+        };
+        manager.register_plugin(sid.clone(), register);
+
+        let (emit_tx, mut emit_rx) = tokio::sync::mpsc::channel::<(String, Value)>(10);
+
+        let mgr_clone = manager.clone();
+        let call_task = tokio::spawn(async move {
+            mgr_clone.call_plugin(
+                "error_event".to_string(),
+                "session-1".to_string(),
+                json!({ "action": "fail" }),
+                move |plugin_sid, req_data| {
+                    let _ = emit_tx.try_send((plugin_sid, req_data));
+                }
+            ).await
+        });
+
+        // Capture the emit
+        let (_, captured_data) = tokio::time::timeout(
+            Duration::from_secs(5),
+            emit_rx.recv()
+        ).await.expect("emit_fn should be called").expect("should receive data");
+
+        // Plugin sends error response
+        let request_id = captured_data["request_id"].as_str().unwrap().to_string();
+        manager.handle_response(HookResponse {
+            request_id,
+            status: "error".to_string(),
+            data: None,
+            error: Some(json!("Plugin processing failed")),
+        });
+
+        // call_plugin should resolve but the result contains the error
+        let result = tokio::time::timeout(Duration::from_secs(5), call_task)
+            .await
+            .expect("call_plugin should complete")
+            .expect("task should not panic");
+
+        // Note: The plugin manager wraps error responses into Ok({ "error": ... })
+        // rather than returning Err. The caller checks for .error field.
+        assert!(result.is_ok());
+        let result_data = result.unwrap();
+        assert_eq!(result_data["error"], "Plugin processing failed");
+
+        manager.remove_plugin(&sid);
+    }
+
+    /// Test that call_plugin times out when plugin doesn't respond
+    #[tokio::test]
+    async fn test_plugin_call_timeout() {
+        let manager = Arc::new(PluginManager::new());
+
+        let sid = "silent-plugin".to_string();
+        let register = HookRegister {
+            token: "test".to_string(),
+            capabilities: HookCapabilities {
+                events: vec!["silent_event".to_string()],
+                user_context: json!({}),
+            },
+        };
+        manager.register_plugin(sid.clone(), register);
+
+        // emit_fn that does nothing (simulates plugin not responding)
+        let result = manager.call_plugin(
+            "silent_event".to_string(),
+            "session-1".to_string(),
+            json!({ "action": "wait" }),
+            |_plugin_sid, _req_data| {
+                // Intentionally do nothing - plugin won't respond
+            }
+        ).await;
+
+        // Should timeout after 10 seconds (default)
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("timed out") || err_msg.contains("Plugin request timed out"));
+
+        manager.remove_plugin(&sid);
+    }
 }

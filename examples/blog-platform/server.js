@@ -3,6 +3,8 @@ const { createServer } = require('http');
 const next = require('next');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const { io: ioClient } = require('socket.io-client');
+const { startAuthPlugin } = require('./src/lib/auth-plugin');
 
 const dev = process.env.NODE_ENV !== 'production';
 const hostname = 'localhost';
@@ -20,7 +22,7 @@ async function startServer() {
   const app = express();
   const httpServer = createServer(app);
 
-  // Configure Socket.IO
+  // Configure Socket.IO for client connections
   const io = new Server(httpServer, {
     cors: {
       origin: '*',
@@ -32,138 +34,88 @@ async function startServer() {
   app.use(cors());
   app.use(express.json());
 
-  // Connect to Flarebase
-  const flarebaseSocket = require('socket.io-client')(FLAREBASE_URL);
+  // Start auth plugin (connect to Flarebase /plugins namespace and handle auth)
+  let flarebasePlugins = null;
+  try {
+    console.log('🔌 Attempting to connect auth plugin to Flarebase...');
+    flarebasePlugins = await startAuthPlugin(FLAREBASE_URL);
+    console.log('✅ Auth plugin connected successfully');
+  } catch (error) {
+    console.warn('⚠️  Auth Plugin failed to connect, server will continue without it:', error.message);
+  }
 
-  flarebaseSocket.on('connect', () => {
-    console.log('Connected to Flarebase:', FLAREBASE_URL);
+  // Connect to Flarebase for real-time event forwarding (read-only, no hooks)
+  let flarebaseSocket = null;
 
-    // Register hooks for user registration
-    flarebaseSocket.emit('register_hook', {
-      collection: 'users',
-      event: 'create',
-      config: {
-        url: `http://localhost:${port}/hooks/user-created`,
-        method: 'POST'
-      }
+  function connectToFlarebase() {
+    console.log('📡 Connecting to Flarebase for real-time events...');
+    flarebaseSocket = ioClient(FLAREBASE_URL);
+
+    flarebaseSocket.on('connect', () => {
+      console.log('✅ Connected to Flarebase:', FLAREBASE_URL);
+      console.log('  Socket ID:', flarebaseSocket.id);
+
+      // Subscribe to real-time updates for forwarding to clients
+      flarebaseSocket.emit('subscribe', 'users');
+      flarebaseSocket.emit('subscribe', 'posts');
+      flarebaseSocket.emit('subscribe', 'comments');
+      console.log('  Subscribed to: users, posts, comments');
     });
 
-    // Register hooks for post creation
-    flarebaseSocket.emit('register_hook', {
-      collection: 'posts',
-      event: 'create',
-      config: {
-        url: `http://localhost:${port}/hooks/post-created`,
-        method: 'POST'
-      }
+    flarebaseSocket.on('disconnect', () => {
+      console.log('❌ Disconnected from Flarebase');
     });
 
-    // Register hooks for comment creation
-    flarebaseSocket.emit('register_hook', {
-      collection: 'comments',
-      event: 'create',
-      config: {
-        url: `http://localhost:${port}/hooks/comment-created`,
-        method: 'POST'
-      }
+    flarebaseSocket.on('connect_error', (err) => {
+      console.error('❌ Flarebase connection error:', err.message);
     });
 
-    // Subscribe to real-time updates
-    flarebaseSocket.emit('subscribe', 'users');
-    flarebaseSocket.emit('subscribe', 'posts');
-    flarebaseSocket.emit('subscribe', 'comments');
-  });
+    // Listen for Flarebase events and forward to clients
+    flarebaseSocket.on('doc_created', (doc) => {
+      console.log('📄 Document created:', doc.collection, doc.id);
+      io.emit('flarebase:doc_created', doc);
+    });
 
-  flarebaseSocket.on('disconnect', () => {
-    console.log('Disconnected from Flarebase');
-  });
+    flarebaseSocket.on('doc_updated', (doc) => {
+      console.log('📝 Document updated:', doc.collection, doc.id);
+      io.emit('flarebase:doc_updated', doc);
+    });
 
-  // Listen for Flarebase events and forward to clients
-  flarebaseSocket.on('doc_created', (doc) => {
-    console.log('Document created:', doc);
-    io.emit('flarebase:doc_created', doc);
-  });
+    flarebaseSocket.on('doc_deleted', (payload) => {
+      console.log('🗑️  Document deleted:', payload.collection, payload.id);
+      io.emit('flarebase:doc_deleted', payload);
+    });
+  }
 
-  flarebaseSocket.on('doc_updated', (doc) => {
-    console.log('Document updated:', doc);
-    io.emit('flarebase:doc_updated', doc);
-  });
-
-  flarebaseSocket.on('doc_deleted', (payload) => {
-    console.log('Document deleted:', payload);
-    io.emit('flarebase:doc_deleted', payload);
-  });
-
-  // Hook endpoints for Flarebase callbacks
-  app.post('/hooks/user-created', async (req, res) => {
-    try {
-      const { doc, operation } = req.body;
-      console.log('User created hook:', doc);
-
-      // Handle user creation logic (send welcome email, etc.)
-      // Broadcast to connected clients
-      io.emit('user:created', doc);
-
-      res.json({ success: true });
-    } catch (error) {
-      console.error('Error handling user-created hook:', error);
-      res.status(500).json({ error: 'Internal server error' });
-    }
-  });
-
-  app.post('/hooks/post-created', async (req, res) => {
-    try {
-      const { doc, operation } = req.body;
-      console.log('Post created hook:', doc);
-
-      // Handle post creation logic (notifications, etc.)
-      // Broadcast to connected clients
-      io.emit('post:created', doc);
-
-      res.json({ success: true });
-    } catch (error) {
-      console.error('Error handling post-created hook:', error);
-      res.status(500).json({ error: 'Internal server error' });
-    }
-  });
-
-  app.post('/hooks/comment-created', async (req, res) => {
-    try {
-      const { doc, operation } = req.body;
-      console.log('Comment created hook:', doc);
-
-      // Handle comment creation logic (notifications, moderation, etc.)
-      // Broadcast to connected clients
-      io.emit('comment:created', doc);
-
-      res.json({ success: true });
-    } catch (error) {
-      console.error('Error handling comment-created hook:', error);
-      res.status(500).json({ error: 'Internal server error' });
-    }
-  });
+  connectToFlarebase();
 
   // Client Socket.IO connection handler
   io.on('connection', (socket) => {
-    console.log('Client connected:', socket.id);
+    console.log(`🔗 Client connected: ${socket.id}`);
+    console.log(`  Transport: ${socket.conn.transport.name}`);
+    console.log(`  Rooms: ${JSON.stringify([...socket.rooms])}`);
 
     // Forward client subscriptions to Flarebase
     socket.on('subscribe', (collection) => {
-      console.log('Client subscribing to:', collection);
-      flarebaseSocket.emit('subscribe', collection);
+      console.log(`📡 Client ${socket.id} subscribing to: ${collection}`);
+      if (flarebaseSocket && flarebaseSocket.connected) {
+        flarebaseSocket.emit('subscribe', collection);
+      }
       socket.join(`collection:${collection}`);
     });
 
     // Forward client unsubscriptions
     socket.on('unsubscribe', (collection) => {
-      console.log('Client unsubscribing from:', collection);
-      flarebaseSocket.emit('unsubscribe', collection);
+      console.log(`📡 Client ${socket.id} unsubscribing from: ${collection}`);
+      if (flarebaseSocket && flarebaseSocket.connected) {
+        flarebaseSocket.emit('unsubscribe', collection);
+      }
       socket.leave(`collection:${collection}`);
     });
 
     // Handle client disconnection
-    socket.on('disconnect', () => {
-      console.log('Client disconnected:', socket.id);
+    socket.on('disconnect', (reason) => {
+      console.log(`🔌 Client disconnected: ${socket.id} (reason: ${reason})`);
     });
   });
 
@@ -172,8 +124,9 @@ async function startServer() {
     res.json({
       status: 'ok',
       flarebase: {
-        connected: flarebaseSocket.connected,
-        url: FLAREBASE_URL
+        connected: flarebaseSocket ? flarebaseSocket.connected : false,
+        url: FLAREBASE_URL,
+        authPlugin: flarebasePlugins ? flarebasePlugins.connected : false
       }
     });
   });

@@ -3,7 +3,7 @@
 
 use flare_db::{SledStorage, Storage};
 use flare_protocol::{Document, Query, QueryOp, BatchOperation, EventType, Event};
-use flare_server::{AppState, ClusterManager, EventBus, HookManager, State, Path, Json, Data};
+use flare_server::{AppState, ClusterManager, EventBus, PluginManager, State, Path, Json, Data};
 use serde_json::json;
 use tempfile::tempdir;
 use std::sync::Arc;
@@ -538,7 +538,7 @@ async fn test_registration_via_http_api() {
     let cluster = Arc::new(ClusterManager::new());
     let (event_bus, _event_rx) = EventBus::new();
     let event_bus = Arc::new(event_bus);
-    let hook_manager = Arc::new(HookManager::new());
+    let plugin_manager = Arc::new(PluginManager::new());
     let (io_layer, io) = SocketIo::builder().build_layer();
 
     let state = Arc::new(AppState {
@@ -547,7 +547,8 @@ async fn test_registration_via_http_api() {
         cluster,
         node_id: 1,
         event_bus,
-        hook_manager,
+        plugin_manager,
+        query_executor: Arc::new(flare_server::QueryExecutor::from_json("{\"queries\": {}}").unwrap()),
     });
 
     // 设置 WebSocket 命名空间
@@ -822,7 +823,7 @@ async fn test_registration_with_websocket_notifications() {
     let cluster = Arc::new(ClusterManager::new());
     let (event_bus, _event_rx) = EventBus::new();
     let event_bus = Arc::new(event_bus);
-    let hook_manager = Arc::new(HookManager::new());
+    let plugin_manager = Arc::new(PluginManager::new());
     let (io_layer, io) = SocketIo::builder().build_layer();
 
     let notification_received = Arc::new(AtomicBool::new(false));
@@ -834,7 +835,8 @@ async fn test_registration_with_websocket_notifications() {
         cluster,
         node_id: 1,
         event_bus,
-        hook_manager,
+        plugin_manager,
+        query_executor: Arc::new(flare_server::QueryExecutor::from_json("{\"queries\": {}}").unwrap()),
     });
 
     // 设置 WebSocket 命名空间

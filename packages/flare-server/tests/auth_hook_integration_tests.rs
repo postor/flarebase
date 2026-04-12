@@ -8,7 +8,7 @@
 // - Email existence checks during registration
 
 use flare_server::{
-    hook_manager::HookManager,
+    plugin_manager::PluginManager,
     jwt_middleware::JwtManager,
     AppState,
 };
@@ -25,7 +25,7 @@ fn create_test_state() -> Arc<AppState> {
     let (_io_layer, io) = SocketIo::builder().build_layer();
     let cluster = Arc::new(flare_server::ClusterManager::new());
     let event_bus = Arc::new(flare_server::EventBus::new().0);
-    let hook_manager = Arc::new(HookManager::new());
+    let plugin_manager = Arc::new(PluginManager::new());
     let query_executor = Arc::new(flare_server::QueryExecutor::from_json("{\"queries\": {}}").unwrap());
 
     Arc::new(AppState {
@@ -34,14 +34,14 @@ fn create_test_state() -> Arc<AppState> {
         cluster,
         node_id: 1,
         event_bus,
-        hook_manager,
+        plugin_manager,
         query_executor,
     })
 }
 
 #[tokio::test]
 async fn test_auth_plugin_request_structure() {
-    let hook_manager = HookManager::new();
+    let pm = PluginManager::new();
     let socket_id = "auth_socket_1".to_string();
 
     // Register auth plugin
@@ -53,17 +53,17 @@ async fn test_auth_plugin_request_structure() {
         },
     };
 
-    hook_manager.register_hook(socket_id.clone(), register);
+    pm.register_plugin(socket_id.clone(), register);
 
     // Verify plugin was registered
-    assert_eq!(hook_manager.get_hook_count("auth"), 1);
-    let hooks = hook_manager.get_hooks_for_event("auth");
+    assert_eq!(pm.get_plugin_count("auth"), 1);
+    let hooks = pm.get_plugins_for_event("auth");
     assert_eq!(hooks[0], socket_id);
 }
 
 #[tokio::test]
 async fn test_auth_plugin_jwt_injection_guest() {
-    let hook_manager = HookManager::new();
+    let pm = PluginManager::new();
     let socket_id = "auth_socket_2".to_string();
 
     // Register auth plugin
@@ -75,7 +75,7 @@ async fn test_auth_plugin_jwt_injection_guest() {
         },
     };
 
-    hook_manager.register_hook(socket_id, register);
+    pm.register_plugin(socket_id, register);
 
     // Simulate calling auth plugin with no user context (guest)
     let (tx, rx) = oneshot::channel();
@@ -141,7 +141,7 @@ async fn test_auth_plugin_jwt_injection_authenticated() {
 
 #[tokio::test]
 async fn test_auth_plugin_login_flow() {
-    let hook_manager = HookManager::new();
+    let pm = PluginManager::new();
     let socket_id = "auth_service_1".to_string();
 
     // Register auth plugin
@@ -153,7 +153,7 @@ async fn test_auth_plugin_login_flow() {
         },
     };
 
-    hook_manager.register_hook(socket_id, register);
+    pm.register_plugin(socket_id, register);
 
     // Simulate login request
     let login_params = json!({
@@ -185,7 +185,7 @@ async fn test_auth_plugin_login_flow() {
 
 #[tokio::test]
 async fn test_auth_plugin_register_flow() {
-    let hook_manager = HookManager::new();
+    let pm = PluginManager::new();
     let socket_id = "auth_service_2".to_string();
 
     // Register auth plugin
@@ -197,7 +197,7 @@ async fn test_auth_plugin_register_flow() {
         },
     };
 
-    hook_manager.register_hook(socket_id, register);
+    pm.register_plugin(socket_id, register);
 
     // Simulate register request
     let register_params = json!({
@@ -287,7 +287,7 @@ async fn test_auth_plugin_response_structure() {
 
 #[tokio::test]
 async fn test_auth_plugin_multiple_concurrent_requests() {
-    let hook_manager = HookManager::new();
+    let pm = PluginManager::new();
     let socket_id = "auth_service_3".to_string();
 
     // Register auth plugin
@@ -299,7 +299,7 @@ async fn test_auth_plugin_multiple_concurrent_requests() {
         },
     };
 
-    hook_manager.register_hook(socket_id, register);
+    pm.register_plugin(socket_id, register);
 
     // Simulate multiple concurrent auth requests
     let requests = vec![
@@ -320,7 +320,7 @@ async fn test_auth_plugin_multiple_concurrent_requests() {
     }
 
     // Verify all requests are tracked
-    assert_eq!(hook_manager.get_hook_count("auth"), 1);
+    assert_eq!(pm.get_plugin_count("auth"), 1);
 }
 
 #[tokio::test]
@@ -587,7 +587,7 @@ async fn test_plugin_concurrent_registration_different_emails() {
 
 #[tokio::test]
 async fn test_plugin_registration_error_handling() {
-    let hook_manager = HookManager::new();
+    let pm = PluginManager::new();
     let socket_id = "auth_plugin_error_test".to_string();
 
     // Register auth plugin
@@ -599,7 +599,7 @@ async fn test_plugin_registration_error_handling() {
         },
     };
 
-    hook_manager.register_hook(socket_id, register);
+    pm.register_plugin(socket_id, register);
 
     // Test various error scenarios
     let error_scenarios = vec![

@@ -110,7 +110,7 @@ async function createConnectedClient() {
   // Dynamic import to avoid issues if module not found
   const { FlareClient } = await import('@flarebase/client');
   
-  const client = new FlareClient(FLARE_URL, { debug: false });
+  const client = new FlareClient(FLARE_URL, { debug: true });
 
   await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('Socket connection timeout')), 10000);

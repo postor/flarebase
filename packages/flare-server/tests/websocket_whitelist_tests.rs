@@ -2,7 +2,7 @@
 /// 测试白名单配置和数据操作正确性
 /// 参考 user_and_article_flows_tests.rs 结构
 
-use flare_server::{AppState, QueryExecutor, UserContext, ClusterManager, EventBus, HookManager};
+use flare_server::{AppState, QueryExecutor, UserContext, ClusterManager, EventBus, PluginManager};
 use flare_db::{Storage, memory::MemoryStorage};
 use flare_protocol::Document;
 use socketioxide::SocketIo;
@@ -92,7 +92,7 @@ fn create_test_state() -> Arc<AppState> {
         cluster: Arc::new(ClusterManager::new()),
         node_id: 1,
         event_bus: Arc::new(EventBus::new().0),
-        hook_manager: Arc::new(HookManager::new()),
+        plugin_manager: Arc::new(PluginManager::new()),
         query_executor,
     })
 }
