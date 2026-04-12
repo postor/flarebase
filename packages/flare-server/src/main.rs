@@ -1,4 +1,4 @@
-use axum::{
+﻿use axum::{
     extract::{Path, State},
     http::{StatusCode, Method},
     routing::{get, post, put, delete},
@@ -368,9 +368,11 @@ async fn main() -> anyhow::Result<()> {
             let session_id = socket.id.to_string();
             let event_name = event.clone();
             tokio::spawn(async move {
-                match stc.hook_manager.call_hook(event, session_id, params, |hook_sid, req_data| {
+                let stc_call = Arc::clone(&stc);
+                let event_name_for_emit = event_name.clone();
+                match stc_call.hook_manager.call_hook(event, session_id, params, move |hook_sid, req_data| {
                     // Send to the hook socket in /hooks namespace by targeting the global hook room
-                    tracing::info!("Sending hook request to socket {} for event {}", hook_sid, event_name);
+                    tracing::info!("Sending hook request to socket {} for event {}", hook_sid, event_name_for_emit);
                     // Use the global hook room that the hook socket joined
                     let _ = stc.io.to(format!("global_hook_{}", hook_sid)).emit("hook_request", &req_data);
                 }).await {
@@ -645,7 +647,6 @@ async fn main() -> anyhow::Result<()> {
 
     // 公开端点（不需要JWT认证）
     let public_routes = Router::new()
-        .route("/call_hook/auth", post(call_hook)) // auth hook 用于登录/注册
         .route("/health", get(health_check))
         .route("/queries/:name", post(run_named_query)); // ✅ 白名单查询公开访问 (用于 SWR)
 
@@ -657,7 +658,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/collections/:collection/:id", delete(delete_doc))
         .route("/query", post(run_query))
         .route("/transaction", post(commit_transaction))
-        .route("/call_hook/:event", post(call_hook))
         .layer(axum::middleware::from_fn(
             jwt_middleware::jwt_middleware,
         ));
@@ -1019,28 +1019,6 @@ async fn commit_transaction(
     Json(true)
 }
 
-async fn call_hook(
-    State(state): State<Arc<AppState>>,
-    Path(event): Path<String>,
-    Json(params): Json<serde_json::Value>,
-) -> Json<serde_json::Value> {
-    let io = state.io.clone();
-    match state.hook_manager.call_hook(event.clone(), "REST".to_string(), params, |hook_sid, req_data| {
-        // Send to the hook socket in /hooks namespace by targeting the global hook room
-        tracing::info!("HTTP: Sending hook request to socket {} for event {}", hook_sid, event);
-        // Use the global hook room that the hook socket joined
-        let _ = io.to(format!("global_hook_{}", hook_sid)).emit("hook_request", &req_data);
-    }).await {
-        Ok(res) => {
-            tracing::info!("HTTP: Hook call successful for event {:?}", res);
-            Json(res)
-        }
-        Err(e) => {
-            tracing::error!("HTTP: Hook call failed for event {}: {}", event, e);
-            Json(serde_json::json!({ "error": e.to_string() }))
-        }
-    }
-}
 
 async fn broadcast_op(state: Arc<AppState>, collection: String, event: &'static str, data: serde_json::Value) {
     let mut sync_data = data;

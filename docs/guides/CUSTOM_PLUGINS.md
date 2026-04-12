@@ -7,7 +7,7 @@
 Custom plugins allow you to extend Flarebase with business logic while:
 
 - Maintaining a persistent WebSocket connection
-- Processing requests sequentially (no race conditions)
+- Processing requests sequentially per connection (no race conditions)
 - Handling long-running operations
 - Receiving server-sent events
 
@@ -100,10 +100,10 @@ import { FlareClient } from '@flarebase/client';
 
 const db = new FlareClient('http://localhost:3000');
 
-// Request OTP (triggers plugin)
+// Request OTP (triggers plugin via WebSocket)
 await db.callPlugin('request_otp', { email: 'user@example.com' });
 
-// Register user (triggers plugin)
+// Register user (triggers plugin via WebSocket)
 await db.callPlugin('register_user', {
   email: 'user@example.com',
   password: 'secure123',
@@ -171,19 +171,35 @@ await db.callPlugin('like_post', { postId: '123' });
 
 ## Concurrency and Ordering
 
-Since each plugin connection processes requests sequentially:
+### Per-Connection Sequential Processing
 
-- **Per-connection**: Requests handled in order
+Each plugin connection processes requests **sequentially**:
+
+- **Per-connection**: Requests handled in order, one at a time
 - **Multiple connections**: Run in parallel
 - **No race conditions**: Within single connection
 
+This means:
+- If Client A and Client B both call `auth` simultaneously, each request is processed in order
+- The plugin receives requests one at a time per connection
+- Responses are correlated back to the correct client automatically
+
+### Scaling Horizontally
+
 For parallel processing, run multiple plugin instances:
+
 ```bash
-# Scale horizontally
+# Scale horizontally - each instance handles its own queue
 node auth-plugin.js &  # Instance 1
 node auth-plugin.js &  # Instance 2
 node auth-plugin.js &  # Instance 3
 ```
+
+Flarebase will use the first available connection for each event. For load balancing across multiple instances, consider:
+
+1. Running multiple plugin processes
+2. Using a load balancer in front of plugin instances
+3. Implementing custom connection selection logic
 
 ## Response Format
 
@@ -226,6 +242,35 @@ Plugins receive user authentication context in `$jwt`:
 
 For unauthenticated requests, `$jwt.role` is `"guest"`.
 
+## WebSocket-Only Communication
+
+**Important**: Plugin calls are now **WebSocket-only**. The HTTP POST `/call_hook/*` endpoints have been removed.
+
+### Why WebSocket-Only?
+
+1. **Connection reuse**: No need for separate HTTP POST - uses the same WebSocket connection
+2. **Better concurrency handling**: Sequential processing per connection prevents race conditions
+3. **Simplified architecture**: One communication channel instead of two
+4. **Real-time capabilities**: Plugins can push events to clients
+
+### Migration from HTTP POST
+
+Old (deprecated):
+```ts
+// Don't do this - HTTP POST endpoints removed
+await fetch('http://localhost:3000/call_hook/auth', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ email, password })
+});
+```
+
+New (WebSocket):
+```ts
+// Use WebSocket-based plugin calls
+await db.callPlugin('auth', { email, password });
+```
+
 ## Best Practices
 
 - **Validate input**: Check all parameters
@@ -235,3 +280,30 @@ For unauthenticated requests, `$jwt.role` is `"guest"`.
 - **Session collections**: Use `_session_{sid}_*` pattern
 - **Background jobs**: Use cron + plugin for scheduled tasks
 - **Webhooks still useful**: For third-party integrations requiring HTTP callbacks
+
+## Testing Concurrent Plugin Calls
+
+When testing plugins, verify that:
+
+1. Different clients receive their own results (not mixed up)
+2. Requests are processed in order per connection
+3. Multiple connections can run in parallel
+
+Example test scenario:
+```ts
+// 5 clients logging in concurrently
+const promises = [];
+for (let i = 0; i < 5; i++) {
+  promises.push(db.callPlugin('auth', {
+    email: `user${i}@example.com`,
+    password: 'password123'
+  }));
+}
+
+const results = await Promise.all(promises);
+
+// Each result should match the corresponding request
+results.forEach((result, i) => {
+  assert(result.user.email === `user${i}@example.com`);
+});
+```

@@ -1,4 +1,4 @@
-/// 独立的 Hook 管理器测试
+﻿/// 独立的 Hook 管理器测试
 /// 不依赖 flare-db，只测试 Hook 核心功能
 
 use flare_server::hook_manager::HookManager;
@@ -102,8 +102,7 @@ async fn test_hook_call_and_response() {
         hook_manager_clone.call_hook(
             "TestEvent".to_string(),
             "session-123".to_string(),
-            json!({ "data": "test" }),
-            |sid, data| {
+            json!({ "data": "test" }),\n            move |sid, data| {
                 ws_manager_clone.emit_to_socket(sid, data);
             },
         ).await
@@ -144,8 +143,7 @@ async fn test_hook_call_no_registered_hooks() {
     let result = hook_manager.call_hook(
         "NonExistentEvent".to_string(),
         "session-000".to_string(),
-        json!({ "test": true }),
-        |sid, data| {
+        json!({ "test": true }),\n        move |sid, data| {
             ws_manager_clone.emit_to_socket(sid, data);
         },
     ).await;
@@ -179,8 +177,7 @@ async fn test_hook_timeout() {
         hook_manager.call_hook(
             "TimeoutEvent".to_string(),
             "session-timeout".to_string(),
-            json!({ "test": true }),
-            |sid, data| {
+            json!({ "test": true }),\n            move |sid, data| {
                 ws_manager_clone.emit_to_socket(sid, data);
                 // 故意不发送响应
             },
@@ -218,8 +215,7 @@ async fn test_hook_error_response() {
         hook_manager_clone.call_hook(
             "ErrorEvent".to_string(),
             "session-error".to_string(),
-            json!({ "invalid": true }),
-            |sid, data| {
+            json!({ "invalid": true }),\n            move |sid, data| {
                 ws_manager_clone.emit_to_socket(sid, data);
             },
         ).await
@@ -325,7 +321,7 @@ async fn test_concurrent_hook_calls() {
                 "ConcurrentEvent".to_string(),
                 format!("session-{}", i),
                 json!({ "index": i }),
-                |sid, data| {
+                move |sid, data| {
                     wm.emit_to_socket(sid, data);
                 },
             ).await;
@@ -361,3 +357,4 @@ async fn test_concurrent_hook_calls() {
         assert_eq!(data["processed"], index);
     }
 }
+

@@ -1,4 +1,4 @@
-/// Hook 增强测试 - 添加详细验证点和调试信息
+﻿/// Hook 增强测试 - 添加详细验证点和调试信息
 ///
 /// 测试覆盖:
 /// 1. 详细的 Hook 注册流程验证
@@ -141,7 +141,7 @@ mod enhanced_tests {
                     "email": "test@example.com",
                     "name": "Test User"
                 }),
-                |sid, data| {
+                move |sid, data| {
                     ws_manager_clone.emit_to_socket(sid, data);
                 },
             ).await;
@@ -234,7 +234,7 @@ mod enhanced_tests {
                         "index": i,
                         "data": format!("request-{}", i)
                     }),
-                    |sid, data| {
+                    move |sid, data| {
                         wm.emit_to_socket(sid, data);
                     },
                 ).await;
@@ -342,7 +342,7 @@ mod enhanced_tests {
                 "ErrorEvent".to_string(),
                 "error-session".to_string(),
                 json!({ "test": "error" }),
-                |sid, data| {
+                move |sid, data| {
                     ws_manager_clone.emit_to_socket(sid, data);
                 },
             ).await;
@@ -437,7 +437,7 @@ mod enhanced_tests {
                 "SharedEvent".to_string(),
                 format!("session-{}", i),
                 json!({ "call_index": i }),
-                |sid, data| {
+                move |sid, data| {
                     ws_manager_clone.emit_to_socket(sid, data);
                 },
             ).await;
@@ -553,7 +553,7 @@ mod enhanced_tests {
             "NonExistentEvent".to_string(),
             "test-session".to_string(),
             json!({ "test": true }),
-            |sid, data| {
+            move |sid, data| {
                 ws_manager_clone.emit_to_socket(sid, data);
             },
         ).await;

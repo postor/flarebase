@@ -1,4 +1,4 @@
-/// 完整的 Hook 注册流程集成测试
+﻿/// 完整的 Hook 注册流程集成测试
 ///
 /// 测试覆盖:
 /// 1. Hook 客户端连接和注册
@@ -100,7 +100,7 @@ mod integration_tests {
                     "email": "test@example.com",
                     "name": "Test User"
                 }),
-                |sid, data| {
+                move |sid, data| {
                     // 模拟通过 WebSocket 发送请求给 Hook 客户端
                     ws_manager_clone.emit_to_socket(sid, data);
                 },
@@ -212,7 +212,7 @@ mod integration_tests {
                 "UserCreated".to_string(),
                 "session-error".to_string(),
                 json!({ "user_id": "invalid" }),
-                |sid, data| {
+                move |sid, data| {
                     ws_manager_clone.emit_to_socket(sid, data);
                 },
             ).await;
@@ -275,7 +275,7 @@ mod integration_tests {
                 "DocCreated".to_string(),
                 "session-timeout".to_string(),
                 json!({ "doc_id": "123" }),
-                |sid, data| {
+                move |sid, data| {
                     ws_manager_clone.emit_to_socket(sid, data);
                     // 故意不发送响应，模拟超时
                 },
@@ -323,7 +323,7 @@ mod integration_tests {
             "UserCreated".to_string(),
             "session-multi".to_string(),
             json!({ "user_id": "user-123" }),
-            |sid, data| {
+            move |sid, data| {
                 ws_manager_clone.emit_to_socket(sid, data);
             },
         ).await;
@@ -392,7 +392,7 @@ mod integration_tests {
             "NonExistentEvent".to_string(),
             "session-000".to_string(),
             json!({ "test": true }),
-            |sid, data| {
+            move |sid, data| {
                 ws_manager_clone.emit_to_socket(sid, data);
             },
         ).await;
@@ -429,7 +429,7 @@ mod integration_tests {
                     "ConcurrentEvent".to_string(),
                     format!("session-{}", i),
                     json!({ "index": i }),
-                    |sid, data| {
+                    move |sid, data| {
                         wm.emit_to_socket(sid, data);
                     },
                 ).await;
