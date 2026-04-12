@@ -229,3 +229,89 @@ export interface OTPUpdatePasswordData {
   newPassword: string;
   otp: string;
 }
+
+/**
+ * Plugin request structure
+ */
+export interface PluginRequest {
+  request_id: string;
+  event_name: string;
+  session_id: string;
+  params: Record<string, any>;
+  $jwt: JWTContext;
+}
+
+/**
+ * JWT context for plugin requests
+ */
+export interface JWTContext {
+  user_id: string | null;
+  email: string | null;
+  role: string;
+}
+
+/**
+ * Plugin response structure
+ */
+export interface PluginResponse {
+  ok: boolean;
+  [key: string]: any;
+}
+
+/**
+ * Plugin error structure
+ */
+export interface PluginError {
+  ok: false;
+  code?: string;
+  message: string;
+}
+
+/**
+ * Plugin handler function type
+ */
+export type PluginHandler = (request: PluginRequest) => Promise<any>;
+
+/**
+ * Plugin configuration
+ */
+export interface PluginConfig {
+  events: string[];
+  handlers: Record<string, PluginHandler>;
+}
+
+/**
+ * Mock plugin instance
+ */
+export interface MockPlugin {
+  events: string[];
+  handlers: Record<string, PluginHandler>;
+  isConnected: boolean;
+  requestCount: number;
+  requestLog: PluginRequestLog[];
+  handleRequest(eventName: string, params: Record<string, any>, jwt?: JWTContext | null): Promise<any>;
+  getRequestLog(): PluginRequestLog[];
+  resetLog(): void;
+}
+
+/**
+ * Plugin request log entry
+ */
+export interface PluginRequestLog {
+  eventName: string;
+  params: Record<string, any>;
+  jwt: JWTContext | null;
+  timestamp: number;
+}
+
+/**
+ * usePlugin hook return type
+ */
+export interface UsePluginResult<T = any> {
+  data: T | null;
+  loading: boolean;
+  error: Error | null;
+  callPlugin: (params?: Record<string, any>) => Promise<T>;
+  reset: () => void;
+  executed: boolean;
+}

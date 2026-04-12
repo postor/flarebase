@@ -14,8 +14,8 @@
 ### Key Features
 
 1. **WebSocket-First Realtime Sync**: Client subscriptions via Socket.IO with room-based routing
-2. **REST for SSR/SWR**: Named queries for server-side rendering and React SWR patterns
-3. **Custom Plugins**: WebSocket-based external business logic (replaces webhooks)
+2. **REST for SSR/SWR Only**: Named queries for server-side rendering and React SWR patterns (NOT for plugins)
+3. **Custom Plugins (WebSocket-ONLY)**: External business logic via persistent WebSocket connections — **NO REST endpoints for plugin calls**
 4. **Session-Scoped Collections**: Private real-time data per client session (`_session_{sid}_*`)
 5. **Security Layers**: JWT authentication, whitelist queries, field-level redaction
 
@@ -190,14 +190,37 @@ async fn test_integration_scenario() {
 
 ## Key Components
 
-### HookManager (Plugin System)
+### PluginManager (Plugin System)
 
 Manages WebSocket-based plugin connections with **per-connection sequential processing**:
 
+**Wire Protocol (WebSocket-ONLY, no REST)**:
+| Direction | Event | Namespace |
+|-----------|-------|-----------|
+| client → server | `call_plugin` | `/` (main) |
+| server → plugin | `plugin_request` | `/plugins` |
+| plugin → server | `plugin_response` | `/plugins` |
+| server → client | `plugin_success` | `/` (main) |
+| server → client | `plugin_error` | `/` (main) |
+| plugin → server | `register` | `/plugins` |
+
+**Namespace Design**:
+- `/` (main): Client connections — call plugins via `call_plugin`, receive results via `plugin_success`/`plugin_error`
+- `/plugins`: Plugin service connections — register capabilities, receive `plugin_request`, send `plugin_response`
+
+**Registration flow**:
+1. Plugin connects to `ws://host:port/plugins`
+2. Plugin emits `register` with `{ token, capabilities: { events: [...], user_context: {...} } }`
+3. Server registers plugin in PluginManager
+4. Client on `/` namespace emits `call_plugin` with `[event_name, params]`
+5. Server routes to plugin via `plugin_request` on `/plugins` namespace
+6. Plugin responds via `plugin_response`
+7. Server emits `plugin_success` or `plugin_error` back to client on `/` namespace
+
 ```rust
 // Each plugin connection processes requests sequentially
-pub struct HookManager {
-    hooks: Arc<DashMap<String, Vec<(String, Arc<PluginConnection>)>>>,
+pub struct PluginManager {
+    plugins: Arc<DashMap<String, Vec<(String, Arc<PluginConnection>)>>>,
     pending_requests: Arc<DashMap<String, oneshot::Sender<Value>>>,
     connections: Arc<DashMap<String, Arc<PluginConnection>>>,
 }
@@ -207,13 +230,15 @@ pub struct HookManager {
 - Sequential processing per connection (no race conditions)
 - Multiple connections run in parallel
 - Isolated results for concurrent clients
+- **10-second timeout** on all plugin calls
+- **NO REST endpoints for plugin calls** — WebSocket only
 
 ### QueryExecutor (Whitelist Queries)
 
-Executes pre-validated named queries for SSR/SWR:
+Executes pre-validated named queries for SSR/SWR via REST:
 
 ```rust
-// Secure query execution
+// Secure query execution (REST endpoint, WebSocket named_query also supported)
 match query_executor.execute_query(&query_name, &user_context, &params) {
     Ok(result) => { /* Return validated result */ }
     Err(err) => { /* Reject unauthorized query */ }
@@ -237,9 +262,18 @@ let user_context = jwt_middleware::extract_user_context(&token)?;
 | Use Case | Transport | Reason |
 |----------|-----------|--------|
 | Realtime sync | WebSocket | Bidirectional, low latency |
-| Plugin calls | WebSocket | Sequential processing |
+| Plugin calls | WebSocket ONLY | Sequential processing, stateful, no REST |
 | SSR/SSG reads | REST | Server-compatible |
 | SWR mutations | REST + WebSocket | Optimistic updates |
+
+**CRITICAL: Plugins are WebSocket-ONLY. There are NO REST endpoints for plugin calls.**
+
+**Why WebSocket-ONLY for plugins?**
+1. **Sequential processing**: Per-connection request ordering prevents race conditions
+2. **Stateful**: Plugin maintains context across requests (impossible with stateless HTTP)
+3. **Non-blocking**: Long operations don't timeout (HTTP has timeout limits)
+4. **Connection reuse**: No separate HTTP POST needed — uses existing WebSocket
+5. **Real-time push**: Plugins can push events to clients via session collections
 
 ### Plugin vs Webhook
 
@@ -250,6 +284,7 @@ let user_context = jwt_middleware::extract_user_context(&token)?;
 | Ordering | Sequential per connection | No ordering guarantee |
 | Long operations | Supported | Timeout risk |
 | Use case | Business logic | Third-party integration |
+| Transport | WebSocket ONLY | HTTP only |
 
 ### Session-Scoped Collections
 
@@ -280,15 +315,15 @@ _session_{sid}_temp_data
 
 ### Adding a New Plugin Event
 
-1. Register plugin capability in client SDK
-2. Handle event in plugin service
-3. Call from client via `callPlugin()`
+1. Add event to plugin service registration (`events: ['my_event']`)
+2. Implement handler: `plugin.on('my_event', async (req) => { ... })`
+3. Call from client via `client.callPlugin('my_event', params)`
 
 ### Creating a Named Query
 
 1. Add query config to `named_queries.json`
 2. Define filters/parameters
-3. Call via REST or WebSocket
+3. Call via REST or WebSocket `namedQuery`
 
 ### Protecting a New Endpoint
 
@@ -300,9 +335,16 @@ _session_{sid}_temp_data
 
 ### Plugin Timeout
 
-- Check plugin is connected to `/hooks`
+- Check plugin is connected to `/plugins` namespace (NOT `/hooks`)
 - Verify event name matches registration
-- Check 10-second timeout in `call_hook_with_jwt`
+- Check 10-second timeout in `callPlugin()`
+- Verify plugin sends `plugin_response` (not `hook_response`)
+
+### Plugin Not Registered
+
+- Plugin must connect to `ws://host:port/plugins` (main namespace won't work for registration)
+- Plugin must emit `register` event with proper format: `{ token, capabilities: { events: [...], user_context: {...} } }`
+- Check server logs for "Plugin registered" message
 
 ### Query Rejected
 
@@ -327,19 +369,19 @@ cargo update
 
 ```rust
 #[tokio::test]
-async fn test_concurrent_calls() {
-    let manager = Arc::new(HookManager::new());
-    
+async fn test_concurrent_plugin_calls() {
+    let manager = Arc::new(PluginManager::new());
+
     // Spawn concurrent tasks
     let mut tasks = Vec::new();
     for i in 0..5 {
         let mgr = manager.clone();
         let task = tokio::spawn(async move {
-            mgr.call_hook(...).await
+            mgr.call_plugin(...).await
         });
         tasks.push(task);
     }
-    
+
     // Verify isolation
     for task in tasks {
         let result = task.await.unwrap();
@@ -351,7 +393,7 @@ async fn test_concurrent_calls() {
 ### Integration Test Pattern
 
 ```rust
-use flare_server::{AppState, HookManager};
+use flare_server::{AppState, PluginManager};
 use tempfile::tempdir;
 
 #[tokio::test]
@@ -360,13 +402,24 @@ async fn test_full_flow() {
     let dir = tempdir().unwrap();
     let storage = Arc::new(SledStorage::new(dir.path()).unwrap());
     let state = create_test_state(storage).await;
-    
+
     // Execute flow
-    let result = state.hook_manager.call_hook(...).await;
-    
+    let result = state.plugin_manager.call_plugin(...).await;
+
     // Verify
     assert!(result.is_ok());
 }
+```
+
+### E2E Test Pattern (Real Plugin + Empty DB + Multiple Clients)
+
+```javascript
+// 1. Start Flarebase server with fresh empty DB
+// 2. Start real plugin service (connects to /plugins namespace)
+// 3. Create multiple FlareClient instances (JS + React)
+// 4. Concurrent plugin calls from all clients
+// 5. Verify each client gets isolated, correct results
+// 6. Cleanup
 ```
 
 ## Notes

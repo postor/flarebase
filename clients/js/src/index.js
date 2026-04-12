@@ -286,14 +286,14 @@ export class FlareClient {
     async login(credentials) {
         return new Promise((resolve, reject) => {
             const timeout = setTimeout(() => {
-                this.socket.off('hook_success');
-                this.socket.off('hook_error');
+                this.socket.off('plugin_success');
+                this.socket.off('plugin_error');
                 reject(new Error('Login request timed out'));
             }, 10000);
 
-            this.socket.once('hook_success', (data) => {
+            this.socket.once('plugin_success', (data) => {
                 clearTimeout(timeout);
-                this.socket.off('hook_error');
+                this.socket.off('plugin_error');
 
                 // Store JWT and user info
                 if (data.token) {
@@ -303,14 +303,14 @@ export class FlareClient {
                 resolve(data);
             });
 
-            this.socket.once('hook_error', (err) => {
+            this.socket.once('plugin_error', (err) => {
                 clearTimeout(timeout);
-                this.socket.off('hook_success');
+                this.socket.off('plugin_success');
                 reject(new Error(err));
             });
 
-            // Call auth hook
-            this.socket.emit('call_hook', ['auth', {
+            // Call auth plugin
+            this.socket.emit('call_plugin', ['auth', {
                 action: 'login',
                 ...credentials
             }]);
@@ -325,14 +325,14 @@ export class FlareClient {
     async register(userData) {
         return new Promise((resolve, reject) => {
             const timeout = setTimeout(() => {
-                this.socket.off('hook_success');
-                this.socket.off('hook_error');
+                this.socket.off('plugin_success');
+                this.socket.off('plugin_error');
                 reject(new Error('Registration request timed out'));
             }, 10000);
 
-            this.socket.once('hook_success', (data) => {
+            this.socket.once('plugin_success', (data) => {
                 clearTimeout(timeout);
-                this.socket.off('hook_error');
+                this.socket.off('plugin_error');
 
                 // Store JWT and user info
                 if (data.token) {
@@ -342,14 +342,14 @@ export class FlareClient {
                 resolve(data);
             });
 
-            this.socket.once('hook_error', (err) => {
+            this.socket.once('plugin_error', (err) => {
                 clearTimeout(timeout);
-                this.socket.off('hook_success');
+                this.socket.off('plugin_success');
                 reject(new Error(err));
             });
 
-            // Call auth hook
-            this.socket.emit('call_hook', ['auth', {
+            // Call auth plugin
+            this.socket.emit('call_plugin', ['auth', {
                 action: 'register',
                 ...userData
             }]);
@@ -449,27 +449,41 @@ export class FlareClient {
         return this.user;
     }
 
+    /**
+     * Call a custom hook (deprecated - use callPlugin instead)
+     * @deprecated Use callPlugin() instead
+     */
     async callHook(eventName, params) {
+        return this.callPlugin(eventName, params);
+    }
+
+    /**
+     * Call a custom plugin via WebSocket
+     * @param {string} eventName - Plugin event name
+     * @param {object} params - Event parameters
+     * @returns {Promise<object>} Plugin response
+     */
+    async callPlugin(eventName, params) {
         return new Promise((resolve, reject) => {
             const timeout = setTimeout(() => {
-                this.socket.off('hook_success');
-                this.socket.off('hook_error');
-                reject(new Error('Hook request timed out'));
+                this.socket.off('plugin_success');
+                this.socket.off('plugin_error');
+                reject(new Error('Plugin request timed out'));
             }, 10000);
 
-            this.socket.once('hook_success', (data) => {
+            this.socket.once('plugin_success', (data) => {
                 clearTimeout(timeout);
-                this.socket.off('hook_error');
+                this.socket.off('plugin_error');
                 resolve(data);
             });
 
-            this.socket.once('hook_error', (err) => {
+            this.socket.once('plugin_error', (err) => {
                 clearTimeout(timeout);
-                this.socket.off('hook_success');
+                this.socket.off('plugin_success');
                 reject(new Error(err));
             });
 
-            this.socket.emit('call_hook', [eventName, params]);
+            this.socket.emit('call_plugin', [eventName, params]);
         });
     }
 

@@ -20,7 +20,7 @@ use async_trait::async_trait;
 
 pub mod cluster;
 pub mod hooks;
-pub mod hook_manager;
+pub mod plugin_manager;
 pub mod permissions;
 pub mod whitelist; // 新增白名单模块
 pub mod jwt_middleware; // JWT认证中间件
@@ -29,7 +29,7 @@ pub mod cors_config; // CORS配置模块
 // Re-export for integration tests
 pub use cluster::ClusterManager;
 pub use hooks::{EventBus, WebhookDispatcher, WebhooksProvider};
-pub use hook_manager::HookManager;
+pub use plugin_manager::PluginManager;
 pub use permissions::{Authorizer, PermissionContext, ResourceType};
 pub use whitelist::{QueryExecutor, QueryResult, UserContext};
 use flare_protocol::{HookRegister, HookResponse};
@@ -160,7 +160,7 @@ pub struct AppState {
     cluster: Arc<ClusterManager>,
     node_id: u64,
     event_bus: Arc<EventBus>,
-    hook_manager: Arc<HookManager>,
+    plugin_manager: Arc<PluginManager>,
     query_executor: Arc<QueryExecutor>, // 新增白名单查询执行器
 }
 
@@ -219,7 +219,7 @@ async fn main() -> anyhow::Result<()> {
     let cluster = Arc::new(ClusterManager::new());
     let (event_bus, event_rx) = EventBus::new();
     let event_bus = Arc::new(event_bus);
-    let hook_manager = Arc::new(HookManager::new());
+    let plugin_manager = Arc::new(PluginManager::new());
 
     // 🔒 加载白名单查询配置
     let query_executor = {
@@ -344,7 +344,7 @@ async fn main() -> anyhow::Result<()> {
         cluster,
         node_id,
         event_bus,
-        hook_manager,
+        plugin_manager,
         query_executor, // 添加白名单查询执行器
     });
 
@@ -361,28 +361,27 @@ async fn main() -> anyhow::Result<()> {
             let _ = socket.join(collection);
         });
 
-        // 为每个事件处理器单独克隆状态
-        let st_hook = Arc::clone(&st);
-        socket.on("call_hook", move |socket: SocketRef, Data((event, params)): Data<(String, serde_json::Value)>| {
-            let stc = Arc::clone(&st_hook);
+        // Plugin call handler (WebSocket-only)
+        let st_plugin = Arc::clone(&st);
+        socket.on("call_plugin", move |socket: SocketRef, Data((event, params)): Data<(String, serde_json::Value)>| {
+            let stc = Arc::clone(&st_plugin);
             let session_id = socket.id.to_string();
             let event_name = event.clone();
             tokio::spawn(async move {
                 let stc_call = Arc::clone(&stc);
                 let event_name_for_emit = event_name.clone();
-                match stc_call.hook_manager.call_hook(event, session_id, params, move |hook_sid, req_data| {
-                    // Send to the hook socket in /hooks namespace by targeting the global hook room
-                    tracing::info!("Sending hook request to socket {} for event {}", hook_sid, event_name_for_emit);
-                    // Use the global hook room that the hook socket joined
-                    let _ = stc.io.to(format!("global_hook_{}", hook_sid)).emit("hook_request", &req_data);
+                match stc_call.plugin_manager.call_plugin(event, session_id, params, move |plugin_sid, req_data| {
+                    // Send to the plugin socket in /plugins namespace by targeting the global plugin room
+                    tracing::info!("Sending plugin request to socket {} for event {}", plugin_sid, event_name_for_emit);
+                    let _ = stc.io.to(format!("global_plugin_{}", plugin_sid)).emit("plugin_request", &req_data);
                 }).await {
                     Ok(res) => {
-                        tracing::info!("Hook call successful for event {:?}", res);
-                        let _ = socket.emit("hook_success", &res);
+                        tracing::info!("Plugin call successful for event {:?}", res);
+                        let _ = socket.emit("plugin_success", &res);
                     }
                     Err(e) => {
-                        tracing::error!("Hook call failed for event {}: {}", event_name, e);
-                        let _ = socket.emit("hook_error", &e.to_string());
+                        tracing::error!("Plugin call failed for event {}: {}", event_name, e);
+                        let _ = socket.emit("plugin_error", &e.to_string());
                     }
                 }
             });
@@ -595,30 +594,30 @@ async fn main() -> anyhow::Result<()> {
         });
     });
 
-    let hook_manager_ns = Arc::clone(&state.hook_manager);
-    io.ns("/hooks", move |socket: SocketRef| {
-        let hm = Arc::clone(&hook_manager_ns);
+    let plugin_manager_ns = Arc::clone(&state.plugin_manager);
+    io.ns("/plugins", move |socket: SocketRef| {
+        let pm = Arc::clone(&plugin_manager_ns);
         let sid = socket.id.to_string();
 
         // Join a room with the same name as the socket ID for easy targeting
         socket.join(sid.clone());
 
-        // Also join a global hook room that can be targeted from any namespace
-        socket.join(format!("global_hook_{}", sid));
+        // Also join a global plugin room that can be targeted from any namespace
+        socket.join(format!("global_plugin_{}", sid));
 
         socket.on("register", move |socket: SocketRef, Data(reg): Data<HookRegister>| {
-            hm.register_hook(socket.id.to_string(), reg);
-        });
-        
-        let hm_resp = Arc::clone(&hook_manager_ns);
-        socket.on("hook_response", move |Data(resp): Data<HookResponse>| {
-            hm_resp.handle_response(resp);
+            pm.register_plugin(socket.id.to_string(), reg);
         });
 
-        let hm_disconnect = Arc::clone(&hook_manager_ns);
+        let pm_resp = Arc::clone(&plugin_manager_ns);
+        socket.on("plugin_response", move |Data(resp): Data<HookResponse>| {
+            pm_resp.handle_response(resp);
+        });
+
+        let pm_disconnect = Arc::clone(&plugin_manager_ns);
         let sid_disconnect = sid.clone();
         socket.on_disconnect(move || {
-            hm_disconnect.remove_hook(&sid_disconnect);
+            pm_disconnect.remove_plugin(&sid_disconnect);
         });
     });
 
@@ -1079,7 +1078,7 @@ mod tests {
             cluster: Arc::new(ClusterManager::new()),
             node_id: 1,
             event_bus: Arc::new(EventBus::new().0),
-            hook_manager: Arc::new(HookManager::new()),
+            plugin_manager: Arc::new(PluginManager::new()),
             query_executor, // 添加查询执行器
         });
 

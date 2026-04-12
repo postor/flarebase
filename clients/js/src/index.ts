@@ -15,6 +15,14 @@ export {
   FlareHook
 } from './FlareClient.js';
 
+// Export plugin classes
+export {
+  createMockPlugin,
+  FlarePluginClient,
+  MockWebSocketServer,
+  MockPlugin
+} from './testing.js';
+
 // Export all types
 export type {
   JWTPayload,
@@ -41,7 +49,17 @@ export type {
   NamedQueryResult,
   OTPRequestResult,
   OTPRegisterData,
-  OTPUpdatePasswordData
+  OTPUpdatePasswordData,
+  // Plugin types
+  PluginRequest,
+  JWTContext,
+  PluginResponse,
+  PluginError,
+  PluginHandler,
+  PluginConfig,
+  MockPlugin as MockPluginInstance,
+  PluginRequestLog,
+  UsePluginResult
 } from './types.js';
 
 // Re-export types for convenience

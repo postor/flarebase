@@ -106,6 +106,10 @@ export function FlarebaseProvider({ baseURL, children, initialJWT = null, initia
       namedQuery: (queryName, params) => {
         return flareClient.namedQuery(queryName, params);
       },
+      // Plugin calls
+      callPlugin: async (eventName, params) => {
+        return await flareClient.callPlugin(eventName, params);
+      },
       // SWR fetchers
       createSWRFetcher: (queryName) => {
         return flareClient.createSWRFetcher(queryName);
@@ -675,6 +679,79 @@ export function useQuery(collection, filters = []) {
   }, [executeQuery]);
 
   return { data, loading, error, refetch: executeQuery };
+}
+
+// ===== Plugin Hook =====
+
+/**
+ * usePlugin - Hook for calling custom plugins
+ * Provides a convenient way to call plugins with loading/error state
+ * 
+ * @param {string} eventName - Plugin event name
+ * @param {Object} options - Hook options
+ * @param {boolean} options.manual - Manual execution mode (default: false)
+ * @returns {Object} Plugin call interface
+ * 
+ * @example
+ * // Auto-execute on mount
+ * const { data, loading, error, callPlugin } = usePlugin('greet', { name: 'Alice' });
+ * 
+ * // Manual execution
+ * const { data, loading, error, callPlugin } = usePlugin('auth', { email }, { manual: true });
+ * // Later: callPlugin({ email: 'new@test.com' })
+ */
+export function usePlugin(eventName, params = {}, options = {}) {
+  const client = useFlarebase();
+  const { manual = false } = options;
+
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [executed, setExecuted] = useState(false);
+
+  const callPlugin = useCallback(async (overrideParams = null) => {
+    const finalParams = overrideParams || params;
+    
+    try {
+      setLoading(true);
+      setError(null);
+      
+      const result = await client.callPlugin(eventName, finalParams);
+      setData(result);
+      setExecuted(true);
+      
+      return result;
+    } catch (err) {
+      setError(err);
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  }, [client, eventName, JSON.stringify(params)]);
+
+  // Auto-execute if not manual
+  useEffect(() => {
+    if (!manual && !executed) {
+      callPlugin();
+    }
+  }, [manual, executed, callPlugin]);
+
+  // Reset function
+  const reset = useCallback(() => {
+    setData(null);
+    setLoading(false);
+    setError(null);
+    setExecuted(false);
+  }, []);
+
+  return {
+    data,
+    loading,
+    error,
+    callPlugin,
+    reset,
+    executed
+  };
 }
 
 // ===== Classes =====

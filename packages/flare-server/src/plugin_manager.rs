@@ -35,56 +35,56 @@ impl PluginConnection {
     }
 }
 
-pub struct HookManager {
+pub struct PluginManager {
     // event_name -> Vec<(SocketId, PluginConnection)>
-    pub(in crate) hooks: Arc<DashMap<String, Vec<(String, Arc<PluginConnection>)>>>,
+    pub(in crate) plugins: Arc<DashMap<String, Vec<(String, Arc<PluginConnection>)>>>,
     // requestId -> Sender for the client's await
     pub(in crate) pending_requests: Arc<DashMap<String, oneshot::Sender<Value>>>,
     // socketId -> PluginConnection for managing per-socket state
     pub(in crate) connections: Arc<DashMap<String, Arc<PluginConnection>>>,
 }
 
-impl Clone for HookManager {
+impl Clone for PluginManager {
     fn clone(&self) -> Self {
         Self {
-            hooks: Arc::clone(&self.hooks),
+            plugins: Arc::clone(&self.plugins),
             pending_requests: Arc::clone(&self.pending_requests),
             connections: Arc::clone(&self.connections),
         }
     }
 }
 
-impl HookManager {
+impl PluginManager {
     pub fn new() -> Self {
         Self {
-            hooks: Arc::new(DashMap::new()),
+            plugins: Arc::new(DashMap::new()),
             pending_requests: Arc::new(DashMap::new()),
             connections: Arc::new(DashMap::new()),
         }
     }
 
-    pub fn register_hook(&self, sid: String, register: HookRegister) {
+    pub fn register_plugin(&self, sid: String, register: HookRegister) {
         let events = register.capabilities.events.clone();
         let connection = Arc::new(PluginConnection::new());
-        
+
         // Store the connection for this socket
         self.connections.insert(sid.clone(), connection.clone());
-        
+
         // Register the connection for each event
         for event in &events {
-            self.hooks.entry(event.clone()).or_default().push((sid.clone(), connection.clone()));
+            self.plugins.entry(event.clone()).or_default().push((sid.clone(), connection.clone()));
         }
         tracing::info!("Plugin registered: {} with events {:?}", sid, events);
     }
 
-    /// Call a hook and wait for response
-    pub async fn call_hook(&self, event_name: String, session_id: String, params: Value, emit_fn: impl Fn(String, Value) + Send + 'static) -> anyhow::Result<Value> {
-        self.call_hook_with_jwt(event_name, session_id, params, None, emit_fn).await
+    /// Call a plugin and wait for response
+    pub async fn call_plugin(&self, event_name: String, session_id: String, params: Value, emit_fn: impl Fn(String, Value) + Send + 'static) -> anyhow::Result<Value> {
+        self.call_plugin_with_jwt(event_name, session_id, params, None, emit_fn).await
     }
 
-    /// Call a hook with JWT user context and wait for response
+    /// Call a plugin with JWT user context and wait for response
     /// This implementation ensures sequential processing per plugin connection
-    pub async fn call_hook_with_jwt(
+    pub async fn call_plugin_with_jwt(
         &self,
         event_name: String,
         session_id: String,
@@ -96,13 +96,13 @@ impl HookManager {
 
         // Get the first available plugin connection for this event
         let (sid, connection) = {
-            let hook_refs = self.hooks.get(&event_name).ok_or_else(|| anyhow::anyhow!("No hook registered for event: {}", event_name))?;
-            let hooks_list = hook_refs.value();
-            if hooks_list.is_empty() {
+            let plugin_refs = self.plugins.get(&event_name).ok_or_else(|| anyhow::anyhow!("No plugin registered for event: {}", event_name))?;
+            let plugins_list = plugin_refs.value();
+            if plugins_list.is_empty() {
                 return Err(anyhow::anyhow!("No active plugin connections for event: {}", event_name));
             }
             // Use first available connection (round-robin could be added here)
-            (hooks_list[0].0.clone(), hooks_list[0].1.clone())
+            (plugins_list[0].0.clone(), plugins_list[0].1.clone())
         };
 
         // Create pending request
@@ -216,9 +216,9 @@ impl HookManager {
         }
     }
 
-    pub fn remove_hook(&self, sid: &str) {
-        // Remove from hooks
-        for mut entry in self.hooks.iter_mut() {
+    pub fn remove_plugin(&self, sid: &str) {
+        // Remove from plugins
+        for mut entry in self.plugins.iter_mut() {
             entry.retain(|(socket_id, _)| socket_id != sid);
         }
         // Remove connection
@@ -228,13 +228,13 @@ impl HookManager {
     // ===== 测试辅助方法 =====
 
     /// 获取指定事件的 Plugin 数量 (用于测试)
-    pub fn get_hook_count(&self, event_name: &str) -> usize {
-        self.hooks.get(event_name).map(|v| v.len()).unwrap_or(0)
+    pub fn get_plugin_count(&self, event_name: &str) -> usize {
+        self.plugins.get(event_name).map(|v| v.len()).unwrap_or(0)
     }
 
     /// 获取指定事件的 Plugin Socket IDs (用于测试)
-    pub fn get_hooks_for_event(&self, event_name: &str) -> Vec<String> {
-        self.hooks.get(event_name)
+    pub fn get_plugins_for_event(&self, event_name: &str) -> Vec<String> {
+        self.plugins.get(event_name)
             .map(|v| v.iter().map(|(sid, _)| sid.clone()).collect())
             .unwrap_or_default()
     }
@@ -249,8 +249,8 @@ mod tests {
     use flare_protocol::HookCapabilities;
 
     #[tokio::test]
-    async fn test_hook_response_correlation() {
-        let manager = HookManager::new();
+    async fn test_plugin_response_correlation() {
+        let manager = PluginManager::new();
         let (tx, rx) = oneshot::channel();
         let request_id = "test-req-1".to_string();
 
@@ -270,8 +270,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_hook_error_correlation() {
-        let manager = HookManager::new();
+    async fn test_plugin_error_correlation() {
+        let manager = PluginManager::new();
         let (tx, rx) = oneshot::channel();
         let request_id = "test-req-2".to_string();
 
@@ -291,8 +291,8 @@ mod tests {
     }
 
     #[test]
-    fn test_hook_registration_and_removal() {
-        let manager = HookManager::new();
+    fn test_plugin_registration_and_removal() {
+        let manager = PluginManager::new();
         let sid = "socket-1".to_string();
 
         let register = HookRegister {
@@ -302,20 +302,20 @@ mod tests {
                 user_context: json!({}),
             },
         };
-        manager.register_hook(sid.clone(), register);
-        
-        assert_eq!(manager.hooks.get("event-1").unwrap().len(), 1);
+        manager.register_plugin(sid.clone(), register);
 
-        manager.remove_hook("socket-1");
-        assert_eq!(manager.hooks.get("event-1").map(|v| v.len()).unwrap_or(0), 0);
+        assert_eq!(manager.plugins.get("event-1").unwrap().len(), 1);
+
+        manager.remove_plugin("socket-1");
+        assert_eq!(manager.plugins.get("event-1").map(|v| v.len()).unwrap_or(0), 0);
     }
 
     #[test]
-    fn test_hook_request_injects_jwt_context() {
-        let manager = HookManager::new();
+    fn test_plugin_request_injects_jwt_context() {
+        let manager = PluginManager::new();
         let sid = "socket-auth-1".to_string();
 
-        // Register an auth hook
+        // Register an auth plugin
         let register = HookRegister {
             token: "test".to_string(),
             capabilities: HookCapabilities {
@@ -323,7 +323,7 @@ mod tests {
                 user_context: json!({}),
             },
         };
-        manager.register_hook(sid.clone(), register);
+        manager.register_plugin(sid.clone(), register);
 
         // Prepare user context
         let _user_context = UserContext {
@@ -345,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hook_request_guest_context() {
+    fn test_plugin_request_guest_context() {
         // Test guest context (no user)
         let jwt_value = serde_json::json!({
             "user_id": null,
@@ -359,10 +359,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_auth_hook_registration() {
-        let manager = HookManager::new();
+    async fn test_auth_plugin_registration() {
+        let manager = PluginManager::new();
 
-        // Register auth hook (fixed name)
+        // Register auth plugin (fixed name)
         let sid = "auth-service-1".to_string();
         let register = HookRegister {
             token: "test".to_string(),
@@ -371,21 +371,21 @@ mod tests {
                 user_context: json!({}),
             },
         };
-        manager.register_hook(sid.clone(), register);
+        manager.register_plugin(sid.clone(), register);
 
-        // Verify auth hook is registered
-        let hooks = manager.get_hooks_for_event("auth");
-        assert_eq!(hooks.len(), 1);
-        assert_eq!(hooks[0], "auth-service-1");
+        // Verify auth plugin is registered
+        let plugins = manager.get_plugins_for_event("auth");
+        assert_eq!(plugins.len(), 1);
+        assert_eq!(plugins[0], "auth-service-1");
 
         // Clean up
-        manager.remove_hook(&sid);
-        assert_eq!(manager.get_hook_count("auth"), 0);
+        manager.remove_plugin(&sid);
+        assert_eq!(manager.get_plugin_count("auth"), 0);
     }
 
     #[tokio::test]
     async fn test_multiple_plugins_same_event() {
-        let manager = HookManager::new();
+        let manager = PluginManager::new();
 
         // Register multiple plugins for the same event
         for i in 1..=3 {
@@ -397,26 +397,26 @@ mod tests {
                     user_context: json!({}),
                 },
             };
-            manager.register_hook(sid, register);
+            manager.register_plugin(sid, register);
         }
 
         // Verify all plugins are registered
-        assert_eq!(manager.get_hook_count("shared_event"), 3);
+        assert_eq!(manager.get_plugin_count("shared_event"), 3);
 
         // Remove one plugin
-        manager.remove_hook("plugin-2");
+        manager.remove_plugin("plugin-2");
 
         // Verify removal
-        assert_eq!(manager.get_hook_count("shared_event"), 2);
-        let hooks = manager.get_hooks_for_event("shared_event");
-        assert!(!hooks.contains(&"plugin-2".to_string()));
+        assert_eq!(manager.get_plugin_count("shared_event"), 2);
+        let plugins = manager.get_plugins_for_event("shared_event");
+        assert!(!plugins.contains(&"plugin-2".to_string()));
     }
 
     #[tokio::test]
     async fn test_plugin_queue_processing() {
-        let manager = Arc::new(HookManager::new());
+        let manager = Arc::new(PluginManager::new());
         let received_messages = Arc::new(Mutex::new(Vec::new()));
-        
+
         // Register a plugin
         let sid = "test-plugin".to_string();
         let register = HookRegister {
@@ -426,7 +426,7 @@ mod tests {
                 user_context: json!({}),
             },
         };
-        manager.register_hook(sid.clone(), register);
+        manager.register_plugin(sid.clone(), register);
 
         // Track received messages
         let received_clone = received_messages.clone();
@@ -444,7 +444,7 @@ mod tests {
             let mgr = manager.clone();
             let emit = emit_fn.clone();
             let task = tokio::spawn(async move {
-                let _ = mgr.call_hook(
+                let _ = mgr.call_plugin(
                     "queue_test".to_string(),
                     format!("session-{}", i),
                     json!({ "request_id": i }),
@@ -462,17 +462,17 @@ mod tests {
         assert_eq!(messages.len(), 3);
 
         // Clean up
-        manager.remove_hook(&sid);
+        manager.remove_plugin(&sid);
     }
 
-    /// Test concurrent auth calls from different clients
+    /// Test concurrent plugin calls from different clients
     /// Each client should receive its own result, not mixed up
     #[tokio::test]
-    async fn test_concurrent_auth_calls_isolated_results() {
-        let manager = Arc::new(HookManager::new());
-        
-        // Register an auth plugin
-        let sid = "auth-plugin".to_string();
+    async fn test_concurrent_plugin_calls_isolated_results() {
+        let manager = Arc::new(PluginManager::new());
+
+        // Register a plugin
+        let sid = "test-plugin".to_string();
         let register = HookRegister {
             token: "test".to_string(),
             capabilities: HookCapabilities {
@@ -480,27 +480,27 @@ mod tests {
                 user_context: json!({}),
             },
         };
-        manager.register_hook(sid.clone(), register);
+        manager.register_plugin(sid.clone(), register);
 
         // Track received requests
         let received_requests = Arc::new(Mutex::new(Vec::new()));
         let received_clone = received_requests.clone();
-        
-        // Simulate 5 different clients logging in concurrently
+
+        // Simulate 5 different clients calling concurrently
         let mut tasks = Vec::new();
         for i in 0..5 {
             let mgr = manager.clone();
             let recv = received_clone.clone();
             let task = tokio::spawn(async move {
                 let session_id = format!("client_session_{}", i);
-                let result = mgr.call_hook(
+                let result = mgr.call_plugin(
                     "auth".to_string(),
                     session_id.clone(),
                     json!({
                         "email": format!("user{}@example.com", i),
                         "password": "password123"
                     }),
-                    move |_hook_sid, data| {
+                    move |_plugin_sid, data| {
                         // Track the request
                         let recv_clone = recv.clone();
                         tokio::spawn(async move {
@@ -516,24 +516,24 @@ mod tests {
 
         // Give time for requests to be sent
         tokio::time::sleep(Duration::from_millis(100)).await;
-        
+
         // Verify all requests were received with correct session IDs
         let requests = received_requests.lock().await;
         assert_eq!(requests.len(), 5);
-        
+
         // Verify each request has a unique session_id
         let session_ids: Vec<_> = requests.iter()
             .map(|r| r["session_id"].as_str().unwrap().to_string())
             .collect();
         let unique_ids: std::collections::HashSet<_> = session_ids.iter().collect();
         assert_eq!(unique_ids.len(), 5); // All session IDs should be unique
-        
+
         // Verify session IDs match expected values
         for i in 0..5 {
             let expected = format!("client_session_{}", i);
             assert!(session_ids.contains(&expected));
         }
 
-        manager.remove_hook(&sid);
+        manager.remove_plugin(&sid);
     }
 }
