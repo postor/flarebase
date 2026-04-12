@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Auth Flow Test</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #111; color: #0f0; }
+    #log { background: #000; padding: 10px; border: 1px solid #333; margin-top: 10px; white-space: pre-wrap; min-height: 300px; }
+    button { padding: 8px 16px; margin: 5px; cursor: pointer; }
+    .success { color: #0f0; }
+    .error { color: #f00; }
+    .info { color: #0af; }
+  </style>
+</head>
+<body>
+  <h2>Flarebase Auth Flow Browser Test</h2>
+  <div>
+    <button onclick="testRegistration()">Test Registration</button>
+    <button onclick="testLogin()">Test Login</button>
+    <button onclick="testFullFlow()">Test Full Flow (Register + Login)</button>
+    <button onclick="clearLog()">Clear Log</button>
+  </div>
+  <div id="log"></div>
+
+  <script type="module">
+    import { io } from 'https://cdn.socket.io/4.7.4/socket.io.esm.min.js';
+
+    const FLAREBASE_URL = 'http://localhost:3000';
+    let lastRegisteredEmail = null;
+    let lastPassword = 'testpass123';
+
+    window.log = function(msg, cls = '') {
+      const el = document.getElementById('log');
+      const time = new Date().toLocaleTimeString();
+      el.innerHTML += `<span class="${cls}">[${time}] ${msg}</span>\n`;
+      el.scrollTop = el.scrollHeight;
+    };
+
+    window.clearLog = function() {
+      document.getElementById('log').innerHTML = '';
+    };
+
+    window.testRegistration = async function() {
+      clearLog();
+      const email = `test-${Date.now()}@example.com`;
+      lastRegisteredEmail = email;
+      await runRegistration(email);
+    };
+
+    window.testLogin = async function() {
+      clearLog();
+      if (!lastRegisteredEmail) {
+        log('No registered email. Run registration first.', 'error');
+        return;
+      }
+      await runLogin(lastRegisteredEmail, lastPassword);
+    };
+
+    window.testFullFlow = async function() {
+      clearLog();
+      const email = `fullflow-${Date.now()}@example.com`;
+      lastRegisteredEmail = email;
+      
+      log('=== STEP 1: Registration ===', 'info');
+      const regOk = await runRegistration(email);
+      
+      if (regOk) {
+        log('\n=== STEP 2: Login with same credentials ===', 'info');
+        await runLogin(email, lastPassword);
+      }
+    };
+
+    async function runRegistration(email) {
+      log(`Connecting to Flarebase at ${FLAREBASE_URL}...`);
+      
+      const clientSocket = io(FLAREBASE_URL, { transports: ['websocket'] });
+      
+      return new Promise((resolve) => {
+        clientSocket.on('connect', () => {
+          log(`✅ Client connected, socket ID: ${clientSocket.id}`, 'success');
+          
+          log(`Emitting call_plugin for registration: ${email}`, 'info');
+          clientSocket.emit('call_plugin', ['auth', {
+            action: 'register',
+            name: 'Browser Test User',
+            email: email,
+            password: lastPassword
+          }]);
+
+          const timeout = setTimeout(() => {
+            log('❌ Registration timed out!', 'error');
+            clientSocket.disconnect();
+            resolve(false);
+          }, 15000);
+
+          clientSocket.once('plugin_success', (data) => {
+            clearTimeout(timeout);
+            log('✅ Registration successful!', 'success');
+            log(`   User: ${JSON.stringify(data.user)}`, 'success');
+            log(`   Token present: ${!!data.token}`, data.token ? 'success' : 'error');
+            clientSocket.disconnect();
+            resolve(true);
+          });
+
+          clientSocket.once('plugin_error', (err) => {
+            clearTimeout(timeout);
+            log(`❌ Registration failed: ${err}`, 'error');
+            clientSocket.disconnect();
+            resolve(false);
+          });
+        });
+
+        clientSocket.on('connect_error', (err) => {
+          log(`❌ Connection failed: ${err.message}`, 'error');
+          resolve(false);
+        });
+      });
+    }
+
+    async function runLogin(email, password) {
+      log(`Connecting to Flarebase at ${FLAREBASE_URL}...`);
+      
+      const clientSocket = io(FLAREBASE_URL, { transports: ['websocket'] });
+      
+      return new Promise((resolve) => {
+        clientSocket.on('connect', () => {
+          log(`✅ Client connected, socket ID: ${clientSocket.id}`, 'success');
+          
+          log(`Emitting call_plugin for login: ${email}`, 'info');
+          clientSocket.emit('call_plugin', ['auth', {
+            action: 'login',
+            email: email,
+            password: password
+          }]);
+
+          const timeout = setTimeout(() => {
+            log('❌ Login timed out!', 'error');
+            clientSocket.disconnect();
+            resolve(false);
+          }, 15000);
+
+          clientSocket.once('plugin_success', (data) => {
+            clearTimeout(timeout);
+            log('✅ Login successful!', 'success');
+            log(`   User: ${JSON.stringify(data.user)}`, 'success');
+            log(`   Token present: ${!!data.token}`, data.token ? 'success' : 'error');
+            clientSocket.disconnect();
+            resolve(true);
+          });
+
+          clientSocket.once('plugin_error', (err) => {
+            clearTimeout(timeout);
+            log(`❌ Login failed: ${err}`, 'error');
+            clientSocket.disconnect();
+            resolve(false);
+          });
+        });
+
+        clientSocket.on('connect_error', (err) => {
+          log(`❌ Connection failed: ${err.message}`, 'error');
+          resolve(false);
+        });
+      });
+    }
+
+    log('Ready. Click a button to test.', 'info');
+  </script>
+</body>
+</html>
