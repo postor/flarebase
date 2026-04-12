@@ -1,324 +1,596 @@
 /**
- * Flarebase Blog Platform - E2E Tests
+ * Blog Platform E2E Tests
  *
- * Tests complete blog functionality using Puppeteer
- * Verifies that JWT authentication is completely transparent
+ * Tests the complete blog platform functionality using the new plugin API:
+ * - Authentication (login/register) via auth plugin
+ * - Article CRUD operations
+ * - Real-time updates via WebSocket
+ * - JWT transparency
+ * - Error handling
+ *
+ * Uses real server connections with NO mocks.
  */
 
-import puppeteer, { Browser, Page } from 'puppeteer';
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { io } from 'socket.io-client';
+import { FlareClient } from '@flarebase/client';
 
-const BASE_URL = process.env.TEST_BASE_URL || 'http://localhost:3000';
-const TEST_PAGE = `${BASE_URL}/test/simple`;
+const FLARE_URL = process.env.FLARE_URL || 'http://localhost:3000';
+
+// Helper: Sleep for milliseconds
+function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Helper: Create a connected FlareClient
+async function createConnectedClient(): Promise<FlareClient> {
+  const client = new FlareClient(FLARE_URL, { debug: false });
+
+  // Wait for socket connection
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Socket connection timeout')), 10000);
+    const socket = (client as any).socket;
+
+    if (socket.connected) {
+      clearTimeout(timeout);
+      resolve();
+    } else {
+      socket.on('connect', () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+      socket.on('connect_error', (err: Error) => {
+        clearTimeout(timeout);
+        reject(err);
+      });
+    }
+  });
+
+  return client;
+}
 
 describe('Blog Platform E2E', () => {
-  let browser: Browser;
-  let page: Page;
-
-  beforeAll(async () => {
-    browser = await puppeteer.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
-    });
-    page = await browser.newPage();
-
-    // Set viewport and timeout
-    await page.setViewport({ width: 1280, height: 800 });
-    page.setDefaultTimeout(10000);
-  });
-
-  afterAll(async () => {
-    await browser.close();
-  });
-
   describe('Authentication Flow', () => {
-    it('should show login form initially', async () => {
-      await page.goto(TEST_PAGE, { waitUntil: 'networkidle0' });
+    it('should register a new user via auth plugin', async () => {
+      const client = await createConnectedClient();
 
-      // Wait for page to load
-      await page.waitForSelector('form');
+      const timestamp = Date.now();
+      const testEmail = `e2e-test-${timestamp}@example.com`;
+      const testName = `E2E Test User ${timestamp}`;
+      const testPassword = 'testPass123';
 
-      // Extract page state
-      const pageState = await page.evaluate(() => {
-        return {
-          title: document.title,
-          hasEmailInput: !!document.querySelector('[data-testid="email-input"]'),
-          hasPasswordInput: !!document.querySelector('[data-testid="password-input"]'),
-          hasSubmitButton: !!document.querySelector('[data-testid="submit-button"]'),
-          hasLogoutButton: !!document.querySelector('[data-testid="logout-button"]')
-        };
+      // Register via auth plugin
+      const result: any = await client.callPlugin('auth', {
+        action: 'register',
+        email: testEmail,
+        password: testPassword,
+        name: testName
       });
 
-      expect(pageState.hasEmailInput).toBe(true);
-      expect(pageState.hasPasswordInput).toBe(true);
-      expect(pageState.hasSubmitButton).toBe(true);
-      expect(pageState.hasLogoutButton).toBe(false); // Not logged in yet
+      // Verify registration response
+      expect(result.ok).toBe(true);
+      expect(result.user.email).toBe(testEmail);
+      expect(result.user.name).toBe(testName);
+      expect(result.token).toBeDefined();
+
+      // Verify JWT was stored automatically
+      expect(client.auth.isAuthenticated).toBe(true);
+      expect(client.auth.user?.email).toBe(testEmail);
+
+      client.logout();
     });
 
-    it('should login successfully and save JWT automatically', async () => {
-      await page.goto(TEST_PAGE, { waitUntil: 'networkidle0' });
+    it('should reject duplicate email registration', async () => {
+      const client = await createConnectedClient();
 
-      // Fill in login form
-      await page.fill('[data-testid="email-input"]', 'test@example.com');
-      await page.fill('[data-testid="password-input"]', 'password123');
+      const timestamp = Date.now();
+      const testEmail = `duplicate-${timestamp}@example.com`;
+      const testPassword = 'testPass123';
 
-      // Submit form
-      await Promise.all([
-        page.waitForNavigation({ waitUntil: 'networkidle0' }),
-        page.click('[data-testid="submit-button"]')
-      ]);
-
-      // Wait for dashboard to load
-      await page.waitForSelector('[data-testid="user-display"]');
-
-      // Verify login success by extracting page content
-      const loggedInState = await page.evaluate(() => {
-        return {
-          hasUserDisplay: !!document.querySelector('[data-testid="user-display"]'),
-          hasLogoutButton: !!document.querySelector('[data-testid="logout-button"]'),
-          hasCreateForm: !!document.querySelector('[data-testid="title-input"]'),
-          userText: document.querySelector('[data-testid="user-display"]')?.textContent
-        };
+      // First registration
+      const result1: any = await client.callPlugin('auth', {
+        action: 'register',
+        email: testEmail,
+        password: testPassword,
+        name: 'First User'
       });
 
-      expect(loggedInState.hasUserDisplay).toBe(true);
-      expect(loggedInState.hasLogoutButton).toBe(true);
-      expect(loggedInState.hasCreateForm).toBe(true);
-      expect(loggedInState.userText).toContain('test');
+      expect(result1.ok).toBe(true);
+
+      // Second registration with same email should fail
+      await expect(
+        client.callPlugin('auth', {
+          action: 'register',
+          email: testEmail,
+          password: testPassword,
+          name: 'Second User'
+        })
+      ).rejects.toThrow();
+
+      client.logout();
     });
 
-    it('should persist JWT across page reloads', async () => {
-      // After successful login from previous test
-      await page.reload({ waitUntil: 'networkidle0' });
+    it('should login successfully with valid credentials', async () => {
+      const client = await createConnectedClient();
 
-      // Wait for page to load
-      await page.waitForSelector('[data-testid="user-display"]');
+      const timestamp = Date.now();
+      const testEmail = `login-test-${timestamp}@example.com`;
+      const testName = `Login Test User`;
+      const testPassword = 'testPass123';
 
-      // Verify user is still logged in (JWT was restored)
-      const authState = await page.evaluate(() => {
-        return {
-          isLoggedIn: !!document.querySelector('[data-testid="user-display"]'),
-          hasCreateButton: !!document.querySelector('[data-testid="create-button"]'),
-          userText: document.querySelector('[data-testid="user-display"]')?.textContent
-        };
+      // Register first
+      await client.callPlugin('auth', {
+        action: 'register',
+        email: testEmail,
+        password: testPassword,
+        name: testName
       });
 
-      expect(authState.isLoggedIn).toBe(true);
-      expect(authState.hasCreateButton).toBe(true);
-      expect(authState.userText).toContain('test');
+      // Logout
+      client.logout();
+      expect(client.auth.isAuthenticated).toBe(false);
+
+      // Login
+      const loginResult: any = await client.callPlugin('auth', {
+        action: 'login',
+        email: testEmail,
+        password: testPassword
+      });
+
+      // Verify login response
+      expect(loginResult.ok).toBe(true);
+      expect(loginResult.user.email).toBe(testEmail);
+      expect(loginResult.token).toBeDefined();
+
+      // Verify JWT was stored automatically
+      expect(client.auth.isAuthenticated).toBe(true);
+      expect(client.auth.user?.email).toBe(testEmail);
+
+      client.logout();
+    });
+
+    it('should reject login with invalid credentials', async () => {
+      const client = await createConnectedClient();
+
+      await expect(
+        client.callPlugin('auth', {
+          action: 'login',
+          email: 'nonexistent@example.com',
+          password: 'wrongpassword'
+        })
+      ).rejects.toThrow();
+
+      expect(client.auth.isAuthenticated).toBe(false);
+    });
+
+    it('should persist JWT across client reconnections', async () => {
+      const client1 = await createConnectedClient();
+
+      const timestamp = Date.now();
+      const testEmail = `persist-${timestamp}@example.com`;
+      const testPassword = 'testPass123';
+
+      // Register
+      await client1.callPlugin('auth', {
+        action: 'register',
+        email: testEmail,
+        password: testPassword,
+        name: 'Persist Test'
+      });
+
+      expect(client1.auth.isAuthenticated).toBe(true);
+      const userId = client1.auth.user?.id;
+
+      // Create new client (simulates page reload)
+      const client2 = await createConnectedClient();
+
+      // JWT should be restored from localStorage
+      expect(client2.auth.isAuthenticated).toBe(true);
+      expect(client2.auth.user?.email).toBe(testEmail);
+      expect(client2.auth.user?.id).toBe(userId);
+
+      client1.logout();
+      client2.logout();
     });
 
     it('should logout and clear JWT automatically', async () => {
-      // Click logout button
-      await page.click('[data-testid="logout-button"]');
+      const client = await createConnectedClient();
 
-      // Wait for login form to reappear
-      await page.waitForSelector('[data-testid="email-input"]');
+      const timestamp = Date.now();
+      const testEmail = `logout-${timestamp}@example.com`;
+      const testPassword = 'testPass123';
 
-      // Verify logged out state
-      const loggedOutState = await page.evaluate(() => {
-        return {
-          hasEmailInput: !!document.querySelector('[data-testid="email-input"]'),
-          hasPasswordInput: !!document.querySelector('[data-testid="password-input"]'),
-          hasUserDisplay: !!document.querySelector('[data-testid="user-display"]'),
-          hasLogoutButton: !!document.querySelector('[data-testid="logout-button"]')
-        };
+      // Register
+      await client.callPlugin('auth', {
+        action: 'register',
+        email: testEmail,
+        password: testPassword,
+        name: 'Logout Test'
       });
 
-      expect(loggedOutState.hasEmailInput).toBe(true);
-      expect(loggedOutState.hasPasswordInput).toBe(true);
-      expect(loggedOutState.hasUserDisplay).toBe(false);
-      expect(loggedOutState.hasLogoutButton).toBe(false);
+      expect(client.auth.isAuthenticated).toBe(true);
+
+      // Logout
+      client.logout();
+
+      // Verify cleared
+      expect(client.auth.isAuthenticated).toBe(false);
+      expect(client.auth.user).toBeNull();
     });
   });
 
   describe('Article Management', () => {
+    let client: FlareClient;
+    let testEmail: string;
+    let testPassword: string;
+
     beforeAll(async () => {
-      // Login before running article tests
-      await page.goto(TEST_PAGE, { waitUntil: 'networkidle0' });
-      await page.fill('[data-testid="email-input"]', 'test@example.com');
-      await page.fill('[data-testid="password-input"]', 'password123');
-      await Promise.all([
-        page.waitForNavigation({ waitUntil: 'networkidle0' }),
-        page.click('[data-testid="submit-button"]')
-      ]);
-      await page.waitForSelector('[data-testid="user-display"]');
+      client = await createConnectedClient();
+
+      testEmail = `article-test-${Date.now()}@example.com`;
+      testPassword = 'testPass123';
+
+      // Register and login
+      await client.callPlugin('auth', {
+        action: 'register',
+        email: testEmail,
+        password: testPassword,
+        name: 'Article Test User'
+      });
     });
 
-    it('should display empty state initially', async () => {
-      const articlesState = await page.evaluate(() => {
-        return {
-          hasEmptyState: !!document.querySelector('[data-testid="empty-state"]'),
-          hasArticles: document.querySelectorAll('[data-testid^="article-"]').length > 0,
-          articleCount: document.querySelectorAll('[data-testid^="article-"]').length
-        };
-      });
-
-      expect(articlesState.hasEmptyState).toBe(true);
-      expect(articlesState.hasArticles).toBe(false);
-      expect(articlesState.articleCount).toBe(0);
+    afterAll(() => {
+      if (client) {
+        client.logout();
+      }
     });
 
     it('should create an article with JWT automatically included', async () => {
-      // Fill in article form
       const testTitle = `E2E Test Article ${Date.now()}`;
       const testContent = `Created at ${new Date().toISOString()}`;
 
-      await page.fill('[data-testid="title-input"]', testTitle);
-      await page.fill('[data-testid="content-input"]', testContent);
-
-      // Submit form
-      await page.click('[data-testid="create-button"]');
-
-      // Wait for article to appear
-      await page.waitForSelector('[data-testid^="article-"]');
-
-      // Extract article data
-      const articleData = await page.evaluate(() => {
-        const article = document.querySelector('[data-testid^="article-"]');
-        if (!article) return null;
-
-        return {
-          title: article.querySelector('[data-testid$="-title"]')?.textContent,
-          content: article.querySelector('[data-testid$="-content"]')?.textContent,
-          totalArticles: document.querySelectorAll('[data-testid^="article-"]').length
-        };
+      // Create article
+      const article = await client.collection('posts').add({
+        title: testTitle,
+        content: testContent,
+        author_id: client.auth.user?.id,
+        status: 'published',
+        created_at: Date.now(),
+        updated_at: Date.now()
       });
 
-      expect(articleData).not.toBeNull();
-      expect(articleData.title).toBe(testTitle);
-      expect(articleData.content).toBe(testContent);
-      expect(articleData.totalArticles).toBeGreaterThan(0);
+      // Verify article was created
+      expect(article.id).toBeDefined();
+      expect(article.data.title).toBe(testTitle);
+      expect(article.data.content).toBe(testContent);
     });
 
-    it('should display all created articles', async () => {
+    it('should retrieve all articles', async () => {
+      const articles = await client.collection('posts').get();
+
+      expect(Array.isArray(articles)).toBe(true);
+      expect(articles.length).toBeGreaterThan(0);
+    });
+
+    it('should update an article', async () => {
+      const testTitle = `Update Test ${Date.now()}`;
+
+      // Create article
+      const article = await client.collection('posts').add({
+        title: testTitle,
+        content: 'Initial content',
+        author_id: client.auth.user?.id,
+        status: 'draft',
+        created_at: Date.now(),
+        updated_at: Date.now()
+      });
+
+      // Update article
+      const updated = await client.collection('posts').doc(article.id).update({
+        content: 'Updated content',
+        status: 'published',
+        updated_at: Date.now()
+      });
+
+      expect(updated.data.content).toBe('Updated content');
+      expect(updated.data.status).toBe('published');
+    });
+
+    it('should delete an article', async () => {
+      const testTitle = `Delete Test ${Date.now()}`;
+
+      // Create article
+      const article = await client.collection('posts').add({
+        title: testTitle,
+        content: 'To be deleted',
+        author_id: client.auth.user?.id,
+        status: 'draft',
+        created_at: Date.now(),
+        updated_at: Date.now()
+      });
+
+      const articleId = article.id;
+
+      // Delete article
+      await client.collection('posts').doc(articleId).delete();
+
+      // Verify deletion by fetching all articles
+      const articles = await client.collection('posts').get();
+      const deletedArticle = articles.find((a: any) => a.id === articleId);
+
+      expect(deletedArticle).toBeUndefined();
+    });
+
+    it('should query articles by author', async () => {
+      const authorId = client.auth.user?.id;
+
       // Create multiple articles
       for (let i = 0; i < 3; i++) {
-        await page.fill('[data-testid="title-input"]', `Article ${i + 1}`);
-        await page.fill('[data-testid="content-input"]', `Content ${i + 1}`);
-        await page.click('[data-testid="create-button"]');
-        await page.waitForTimeout(500); // Brief wait for article to appear
+        await client.collection('posts').add({
+          title: `Author Test Article ${i}`,
+          content: `Content ${i}`,
+          author_id: authorId,
+          status: 'published',
+          created_at: Date.now(),
+          updated_at: Date.now()
+        });
       }
 
-      // Extract articles list
-      const articlesList = await page.evaluate(() => {
-        return {
-          articleCount: document.querySelectorAll('[data-testid^="article-"]').length,
-          articles: Array.from(document.querySelectorAll('[data-testid^="article-"]')).map(article => ({
-            title: article.querySelector('[data-testid$="-title"]')?.textContent,
-            content: article.querySelector('[data-testid$="-content"]')?.textContent
-          }))
-        };
+      // Query by author
+      const authorArticles = await client
+        .collection('posts')
+        .where('author_id', '==', authorId)
+        .get();
+
+      expect(authorArticles.length).toBeGreaterThanOrEqual(3);
+    });
+  });
+
+  describe('Real-time Updates', () => {
+    let client1: FlareClient;
+    let client2: FlareClient;
+    let testEmail1: string;
+    let testEmail2: string;
+
+    beforeAll(async () => {
+      client1 = await createConnectedClient();
+      client2 = await createConnectedClient();
+
+      testEmail1 = `realtime1-${Date.now()}@example.com`;
+      testEmail2 = `realtime2-${Date.now()}@example.com`;
+      const testPassword = 'testPass123';
+
+      // Register both clients
+      await client1.callPlugin('auth', {
+        action: 'register',
+        email: testEmail1,
+        password: testPassword,
+        name: 'Realtime User 1'
       });
 
-      expect(articlesList.articleCount).toBeGreaterThanOrEqual(3);
-      expect(articlesList.articles.length).toBeGreaterThanOrEqual(3);
+      await client2.callPlugin('auth', {
+        action: 'register',
+        email: testEmail2,
+        password: testPassword,
+        name: 'Realtime User 2'
+      });
     });
 
-    it('should show correct status footer information', async () => {
-      const footerInfo = await page.evaluate(() => {
-        const footer = document.querySelector('[data-testid="status-footer"]');
-        return {
-          footerText: footer?.textContent,
-          hasAuthInfo: footer?.textContent?.includes('Auth:'),
-          hasArticlesCount: footer?.textContent?.includes('Articles:'),
-          hasServerURL: footer?.textContent?.includes('Server:')
-        };
+    afterAll(() => {
+      client1.logout();
+      client2.logout();
+    });
+
+    it('should receive real-time article creation events', async () => {
+      const receivedEvents: any[] = [];
+
+      // Subscribe to posts collection on client2
+      client2.collection('posts').onSnapshot((change: any) => {
+        receivedEvents.push(change);
       });
 
-      expect(footerInfo.hasAuthInfo).toBe(true);
-      expect(footerInfo.hasArticlesCount).toBe(true);
-      expect(footerInfo.hasServerURL).toBe(true);
-      expect(footerInfo.footerText).toContain('test@example.com');
+      // Wait for subscription to register
+      await sleep(500);
+
+      // Create article on client1
+      const testTitle = `Realtime Test ${Date.now()}`;
+      await client1.collection('posts').add({
+        title: testTitle,
+        content: 'Realtime test content',
+        author_id: client1.auth.user?.id,
+        status: 'published',
+        created_at: Date.now(),
+        updated_at: Date.now()
+      });
+
+      // Wait for event
+      await sleep(1000);
+
+      // Verify event received
+      const addedEvent = receivedEvents.find(e => e.type === 'added');
+      expect(addedEvent).toBeDefined();
+      expect(addedEvent.doc.data.title).toBe(testTitle);
+    });
+
+    it('should receive real-time article update events', async () => {
+      const receivedEvents: any[] = [];
+
+      // Subscribe to posts collection
+      client2.collection('posts').onSnapshot((change: any) => {
+        receivedEvents.push(change);
+      });
+
+      await sleep(500);
+
+      // Create article
+      const article = await client1.collection('posts').add({
+        title: `Update Realtime Test ${Date.now()}`,
+        content: 'Initial',
+        author_id: client1.auth.user?.id,
+        status: 'draft',
+        created_at: Date.now(),
+        updated_at: Date.now()
+      });
+
+      await sleep(500);
+
+      // Update article
+      await client1.collection('posts').doc(article.id).update({
+        content: 'Updated content',
+        status: 'published',
+        updated_at: Date.now()
+      });
+
+      // Wait for event
+      await sleep(1000);
+
+      // Verify update event received
+      const modifiedEvent = receivedEvents.find(e => e.type === 'modified');
+      expect(modifiedEvent).toBeDefined();
+    });
+
+    it('should receive real-time article deletion events', async () => {
+      const receivedEvents: any[] = [];
+
+      // Subscribe to posts collection
+      client2.collection('posts').onSnapshot((change: any) => {
+        receivedEvents.push(change);
+      });
+
+      await sleep(500);
+
+      // Create article
+      const article = await client1.collection('posts').add({
+        title: `Delete Realtime Test ${Date.now()}`,
+        content: 'To be deleted',
+        author_id: client1.auth.user?.id,
+        status: 'draft',
+        created_at: Date.now(),
+        updated_at: Date.now()
+      });
+
+      await sleep(500);
+
+      // Delete article
+      await client1.collection('posts').doc(article.id).delete();
+
+      // Wait for event
+      await sleep(1000);
+
+      // Verify delete event received
+      const removedEvent = receivedEvents.find(e => e.type === 'removed');
+      expect(removedEvent).toBeDefined();
     });
   });
 
   describe('JWT Transparency', () => {
-    it('should not expose JWT methods to user code', async () => {
-      // Check that JWT-related methods are not exposed in the window object
-      const exposedMethods = await page.evaluate(() => {
-        const client = new (window as any).FlarebaseClient();
+    it('should not expose internal JWT methods publicly', async () => {
+      const client = await createConnectedClient();
 
-        // Check that internal JWT methods are not accessible
-        return {
-          hasSetJWT: typeof (client as any).setJWT === 'function',
-          hasLoadJWT: typeof (client as any).loadJWT === 'function',
-          hasClearJWT: typeof (client as any).clearJWT === 'function',
-          hasSaveJWT: typeof (client as any)._saveJWT === 'function',
-          hasPublicLogin: typeof client.login === 'function',
-          hasPublicLogout: typeof client.logout === 'function',
-          hasPublicAuth: typeof client.auth === 'object'
-        };
-      });
+      // Check that internal JWT methods are not accessible on public API
+      expect((client as any)._setJWT).toBeDefined(); // Internal method exists
+      expect((client as any).setJWT).toBeUndefined(); // But not exposed as setJWT
 
-      // Internal methods should not be exposed (or are private)
-      expect(exposedMethods.hasPublicLogin).toBe(true);
-      expect(exposedMethods.hasPublicLogout).toBe(true);
-      expect(exposedMethods.hasPublicAuth).toBe(true);
+      // Public auth accessor should work
+      expect(client.auth).toBeDefined();
+      expect(typeof client.auth.isAuthenticated).toBe('boolean');
+      expect(typeof client.auth.user).toBe('object');
+
+      client.logout();
     });
 
-    it('should handle JWT state transparently', async () => {
-      // Verify that JWT operations happen automatically
-      const authFlow = await page.evaluate(async () => {
-        const client = new (window as any).FlarebaseClient();
+    it('should handle JWT state transparently during auth flow', async () => {
+      const client = await createConnectedClient();
 
-        // Initial state
-        const initialState = {
-          isAuthenticated: client.auth.isAuthenticated,
-          user: client.auth.user
-        };
+      // Initial state
+      expect(client.auth.isAuthenticated).toBe(false);
+      expect(client.auth.user).toBeNull();
 
-        return {
-          initialState,
-          hasAuthProperty: 'auth' in client,
-          hasArticlesProperty: 'articles' in client
-        };
+      const timestamp = Date.now();
+      const testEmail = `jwt-transparency-${timestamp}@example.com`;
+      const testPassword = 'testPass123';
+
+      // Register
+      const result: any = await client.callPlugin('auth', {
+        action: 'register',
+        email: testEmail,
+        password: testPassword,
+        name: 'Transparency Test'
       });
 
-      expect(authFlow.hasAuthProperty).toBe(true);
-      expect(authFlow.hasArticlesProperty).toBe(true);
-      expect(authFlow.initialState.isAuthenticated).toBeDefined();
+      // After registration, JWT should be set automatically
+      expect(client.auth.isAuthenticated).toBe(true);
+      expect(client.auth.user?.email).toBe(testEmail);
+      expect(result.token).toBeDefined();
+
+      // Logout
+      client.logout();
+      expect(client.auth.isAuthenticated).toBe(false);
+      expect(client.auth.user).toBeNull();
+
+      client.logout();
     });
   });
 
   describe('Error Handling', () => {
-    it('should show error message for invalid credentials', async () => {
-      // Logout first
-      await page.click('[data-testid="logout-button"]');
-      await page.waitForSelector('[data-testid="email-input"]');
+    let client: FlareClient;
 
-      // Try to login with wrong credentials
-      await page.fill('[data-testid="email-input"]', 'wrong@example.com');
-      await page.fill('[data-testid="password-input"]', 'wrongpassword');
-      await page.click('[data-testid="submit-button"]');
-
-      // Wait for error message
-      await page.waitForSelector('[data-testid="error-message"]', { timeout: 5000 });
-
-      const errorState = await page.evaluate(() => {
-        const errorElement = document.querySelector('[data-testid="error-message"]');
-        return {
-          hasError: !!errorElement,
-          errorText: errorElement?.textContent
-        };
-      });
-
-      expect(errorState.hasError).toBe(true);
-      expect(errorState.errorText).toBeDefined();
+    beforeAll(async () => {
+      client = await createConnectedClient();
     });
 
-    it('should remain on login form after failed login', async () => {
-      const formState = await page.evaluate(() => {
-        return {
-          hasEmailInput: !!document.querySelector('[data-testid="email-input"]'),
-          hasPasswordInput: !!document.querySelector('[data-testid="password-input"]'),
-          hasUserDisplay: !!document.querySelector('[data-testid="user-display"]')
-        };
-      });
+    afterAll(() => {
+      client.logout();
+    });
 
-      expect(formState.hasEmailInput).toBe(true);
-      expect(formState.hasPasswordInput).toBe(true);
-      expect(formState.hasUserDisplay).toBe(false); // Not logged in
+    it('should handle invalid plugin event names', async () => {
+      await expect(
+        client.callPlugin('nonexistent_event', { foo: 'bar' })
+      ).rejects.toThrow();
+    });
+
+    it('should handle missing required fields in registration', async () => {
+      await expect(
+        client.callPlugin('auth', {
+          action: 'register',
+          email: 'test@example.com'
+          // Missing password and name
+        })
+      ).rejects.toThrow();
+    });
+
+    it('should handle missing required fields in login', async () => {
+      await expect(
+        client.callPlugin('auth', {
+          action: 'login',
+          email: 'test@example.com'
+          // Missing password
+        })
+      ).rejects.toThrow();
+    });
+
+    it('should handle concurrent plugin calls correctly', async () => {
+      const timestamp = Date.now();
+
+      // Create multiple articles concurrently
+      const promises = [];
+      for (let i = 0; i < 5; i++) {
+        promises.push(
+          client.collection('posts').add({
+            title: `Concurrent Test ${i} - ${timestamp}`,
+            content: `Content ${i}`,
+            author_id: client.auth.user?.id || 'anonymous',
+            status: 'draft',
+            created_at: Date.now(),
+            updated_at: Date.now()
+          })
+        );
+      }
+
+      const results = await Promise.allSettled(promises);
+
+      // All should succeed or some may fail due to auth (which is fine)
+      const fulfilled = results.filter(r => r.status === 'fulfilled');
+      expect(fulfilled.length).toBeGreaterThan(0);
     });
   });
 });

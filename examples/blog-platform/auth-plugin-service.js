@@ -4,31 +4,29 @@
  * This service handles authentication operations (login, register) via WebSocket.
  * It connects to Flarebase server and registers the "auth" plugin.
  *
- * WebSocket Events (from server):
- * - register: Plugin registers its capabilities
- * - hook_request: Server sends plugin invocation request
- * - hook_response: Plugin sends response back to server
+ * Uses the NEW plugin API (plugin_request/plugin_response events on /plugins namespace).
  *
  * Usage: node auth-plugin-service.js
  */
 
 const { io } = require('socket.io-client');
+const crypto = require('crypto');
 
 const FLAREBASE_URL = process.env.FLAREBASE_URL || 'http://localhost:3000';
 
 console.log('🔐 Starting Auth Plugin Service...');
 console.log(`📡 Connecting to Flarebase: ${FLAREBASE_URL}`);
 
-// Connect to Flarebase /hooks namespace
-const flarebase = io(`${FLAREBASE_URL}/hooks`, {
+// Connect to Flarebase /plugins namespace (NEW API)
+const flarebase = io(`${FLAREBASE_URL}/plugins`, {
   transports: ['websocket'],
   reconnection: true
 });
 
 flarebase.on('connect', () => {
-  console.log('✅ Connected to Flarebase /hooks namespace');
+  console.log('✅ Connected to Flarebase /plugins namespace');
 
-  // Register auth plugin with capabilities
+  // Register auth plugin with capabilities (NEW API)
   flarebase.emit('register', {
     token: 'auth-plugin-token',
     capabilities: {
@@ -49,8 +47,8 @@ flarebase.on('connect_error', (error) => {
   console.error('Connection error:', error.message);
 });
 
-// Listen for plugin requests from server
-flarebase.on('hook_request', async (data) => {
+// Listen for plugin requests from server (NEW API: plugin_request/plugin_response)
+flarebase.on('plugin_request', async (data) => {
   const { request_id, event_name, params, $jwt } = data;
 
   console.log('\n📨 Plugin Request Received:');
@@ -78,8 +76,8 @@ flarebase.on('hook_request', async (data) => {
     console.log(`✅ ${params.action} successful`);
     console.log(`  User: ${result.user?.email}`);
 
-    // Send success response to server
-    flarebase.emit('hook_response', {
+    // Send success response to server (NEW API)
+    flarebase.emit('plugin_response', {
       request_id: request_id,
       status: 'success',
       data: result
@@ -88,8 +86,8 @@ flarebase.on('hook_request', async (data) => {
   } catch (error) {
     console.error(`❌ ${params.action} failed:`, error.message);
 
-    // Send error response to server
-    flarebase.emit('hook_response', {
+    // Send error response to server (NEW API)
+    flarebase.emit('plugin_response', {
       request_id: request_id,
       status: 'error',
       error: error.message
@@ -147,6 +145,10 @@ async function handleRegister(params) {
     }
   }
 
+  // Hash password properly using crypto
+  const salt = crypto.randomBytes(16).toString('hex');
+  const passwordHash = crypto.pbkdf2Sync(password, salt, 10000, 64, 'sha256').toString('hex');
+
   // Create user via Flarebase REST API
   // Use X-Internal-Service header to bypass JWT authentication
   const createResponse = await fetch(`${FLAREBASE_URL}/collections/users`, {
@@ -158,7 +160,8 @@ async function handleRegister(params) {
     body: JSON.stringify({
       email,
       name,
-      password_hash: `hashed_${password}_${Date.now()}`, // In production, use bcrypt!
+      password_hash: passwordHash,
+      password_salt: salt,
       role: 'author',
       status: 'active',
       created_at: Date.now(),
@@ -167,7 +170,8 @@ async function handleRegister(params) {
   });
 
   if (!createResponse.ok) {
-    throw new Error('Failed to create user');
+    const errorText = await createResponse.text();
+    throw new Error(`Failed to create user: ${errorText}`);
   }
 
   const userData = await createResponse.json();
@@ -178,6 +182,7 @@ async function handleRegister(params) {
   console.log(`  ✅ User created: ${userData.id}`);
 
   return {
+    ok: true,
     user: {
       id: userData.id,
       email: userData.data.email,
@@ -225,13 +230,27 @@ async function handleLogin(params) {
 
   if (!user) {
     console.log(`  ⚠️  User not found: ${email}`);
-    throw new Error('Invalid email or password');
+    throw new Error('USER_NOT_FOUND');
   }
 
-  // In production, verify password hash using bcrypt!
-  // For demo purposes, just check user exists
-  if (!user.data?.password_hash) {
-    throw new Error('Invalid email or password');
+  // Verify password hash
+  if (!user.data?.password_hash || !user.data?.password_salt) {
+    console.log(`  ⚠️  No password hash for user: ${email}`);
+    throw new Error('INVALID_CREDENTIALS');
+  }
+
+  // Hash the provided password with the stored salt
+  const hashedInput = crypto.pbkdf2Sync(
+    password,
+    user.data.password_salt,
+    10000,
+    64,
+    'sha256'
+  ).toString('hex');
+
+  if (hashedInput !== user.data.password_hash) {
+    console.log(`  ⚠️  Invalid password for: ${email}`);
+    throw new Error('INVALID_CREDENTIALS');
   }
 
   // Generate JWT token
@@ -240,6 +259,7 @@ async function handleLogin(params) {
   console.log(`  ✅ Login successful for: ${email}`);
 
   return {
+    ok: true,
     user: {
       id: user.id,
       email: user.data.email,
